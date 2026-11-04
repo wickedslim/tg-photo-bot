@@ -1,0 +1,29 @@
+{
+  "name": "tg-photo-bot",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
+    "db:init": "wrangler d1 migrations apply tg-photos --remote",
+    "db:init:local": "wrangler d1 migrations apply tg-photos --local",
+    "setup-bot": "node scripts/setup-bot.mjs",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260426.0",
+    "vite": "^6.4.5",
+    "wrangler": "4.86.0"
+  },
+  "dependencies": {
+    "idb-keyval": "^6.3.0",
+    "photoswipe": "^5.4.4"
+  }
+}

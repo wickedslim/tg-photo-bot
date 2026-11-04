@@ -1,0 +1,4 @@
+# Скопируйте в .dev.vars для `npm run worker:dev` (файл .dev.vars в git не попадает).
+BOT_TOKEN=123456:TEST-TOKEN-FOR-LOCAL-DEV
+WEBHOOK_SECRET=local-dev-secret
+ALLOWED_ORIGIN=http://localhost:5173

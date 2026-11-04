@@ -1,0 +1,22 @@
+# Настройки сервера на Cloudflare Workers. Секреты (токен бота) здесь НЕ хранятся —
+# они задаются командой `npx wrangler secret put ...` (см. README).
+name = "tg-photo-bot"
+main = "worker/src/index.js"
+compatibility_date = "2026-04-20"
+
+[vars]
+# Адрес сайта с галереей (GitHub Pages) — только с него браузер пустит запросы к серверу.
+ALLOWED_ORIGIN = "https://wickedslim.github.io"
+# Ссылка, которую бот даёт кнопкой «Открыть галерею».
+WEBAPP_URL = "https://wickedslim.github.io/tg-photo-bot/"
+# Пусто — ботом может пользоваться любой. Иначе номера пользователей Telegram через запятую.
+ALLOWED_USERS = ""
+# Сколько секунд данные запуска мини-приложения считаются свежими.
+INIT_DATA_MAX_AGE = "86400"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tg-photos"
+# Замените на database_id из вывода `npx wrangler d1 create tg-photos`.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "worker/migrations"
