@@ -85,14 +85,14 @@ npx wrangler secret put BOT_TOKEN
 ```
 
 Секрет для вебхука — по нему сервер отличает настоящие сообщения от Telegram от поддельных.
-Сгенерируйте случайную строку и сохраните её — она понадобится в шаге 6:
+Сгенерируйте случайную строку, сохраните её в файл `.webhook-secret` (понадобится в шаге 6) и передайте серверу:
 
 ```bash
-openssl rand -hex 32
+openssl rand -hex 32 | tr -d '\n' > .webhook-secret
 ```
 
 ```bash
-npx wrangler secret put WEBHOOK_SECRET
+npx wrangler secret put WEBHOOK_SECRET < .webhook-secret
 ```
 
 ### 4. Настройки и запуск сервера
@@ -122,14 +122,16 @@ npm run worker:deploy
 
 ### 6. Связать бота с сервером
 
+Запишите адрес сервера в файл `.worker-url` (или скрипт спросит его сам) и запустите:
+
 ```bash
-BOT_TOKEN='токен' WEBHOOK_SECRET='секрет из шага 3' \
-WORKER_URL='https://tg-photo-bot.<ваше-имя>.workers.dev' \
-WEBAPP_URL='https://wickedslim.github.io/tg-photo-bot/' npm run setup-bot
+npm run setup-bot
 ```
 
-Скрипт вызывает `setWebhook` с секретом, добавляет в чат с ботом кнопку «Галерея» и команду /start.
-Напишите боту `/start` — он ответит кнопкой «Открыть галерею».
+Скрипт спросит токен бота — ввод не виден на экране и не остаётся в истории команд. Секрет вебхука он
+возьмёт из файла `.webhook-secret`, если вы сохранили секрет туда (оба файла в git не попадают), иначе
+передайте его переменной `WEBHOOK_SECRET`. Скрипт вызывает `setWebhook` с секретом, добавляет в чат с ботом
+кнопку «Галерея» и команду /start. Напишите боту `/start` — он ответит кнопкой «Открыть галерею».
 
 ## Ограничения
 

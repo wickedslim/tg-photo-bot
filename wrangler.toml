@@ -17,6 +17,5 @@ INIT_DATA_MAX_AGE = "86400"
 [[d1_databases]]
 binding = "DB"
 database_name = "tg-photos"
-# Замените на database_id из вывода `npx wrangler d1 create tg-photos`.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "5353f806-1922-4ad0-aefe-f5515a2d8315"
 migrations_dir = "worker/migrations"
