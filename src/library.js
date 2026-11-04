@@ -87,14 +87,14 @@ class Cards {
       if (e.isIntersecting) {
         if (img.src) continue;
         const item = card._item;
-        const now = this.loader.peek(item, 'medium');
+        const now = this.loader.peek(item, 'XL');
         if (now) {
           img.src = now;
           continue;
         }
-        const any = this.loader.peekAny(item, ['large', 'thumb']);
+        const any = this.loader.peekAny(item, ['L', 'M', 'S']);
         if (any) img.src = any;
-        const job = this.loader.load(item, 'medium');
+        const job = this.loader.load(item, 'XL');
         this.jobs.set(card, job);
         job.promise.then((url) => (img.src = url), () => {}).finally(() => this.jobs.delete(card));
       } else {

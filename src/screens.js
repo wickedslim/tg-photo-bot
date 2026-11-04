@@ -1,4 +1,4 @@
-// Шторки (настройки, автозагрузка), экраны ошибок и всплывающие сообщения.
+// Настройки (шторка), автозагрузка, экраны-заглушки и всплывающие сообщения.
 import { pushBack, haptic, openExternal } from './tg.js';
 import { storageUsage } from './store.js';
 import { photosCount } from './grid.js';
@@ -27,6 +27,41 @@ export function showMessage(root, { title, text }) {
 export const icon = () =>
   '<div class="app-icon"><svg viewBox="0 0 64 64" width="72" height="72"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5ac8fa"/><stop offset=".55" stop-color="#2a9df4"/><stop offset="1" stop-color="#5856d6"/></linearGradient></defs><rect width="64" height="64" rx="15" fill="url(#g)"/><path d="M15 44 26 31l8 9 6-6 9 10Z" fill="#fff"/><circle cx="42" cy="22" r="5" fill="#fff"/></svg></div>';
 
+// Окошко с полем ввода в стиле iOS (window.prompt в Telegram работает не везде).
+export function askText({ title, message = '', value = '', placeholder = '', ok = 'Готово' }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'alert-wrap';
+    wrap.innerHTML = `
+      <div class="alert">
+        <div class="alert-title">${esc(title)}</div>
+        ${message ? `<div class="alert-msg">${esc(message)}</div>` : ''}
+        <input class="alert-input" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" enterkeyhint="done">
+        <div class="alert-btns"><button data-r="cancel">Отмена</button><button data-r="ok" class="bold">${esc(ok)}</button></div>
+      </div>`;
+    document.body.append(wrap);
+    const input = wrap.querySelector('input');
+    requestAnimationFrame(() => {
+      wrap.classList.add('open');
+      input.focus();
+      input.select();
+    });
+    let popBack = () => {};
+    const done = (v) => {
+      popBack();
+      wrap.classList.remove('open');
+      setTimeout(() => wrap.remove(), 200);
+      resolve(v);
+    };
+    popBack = pushBack(() => done(null));
+    wrap.addEventListener('click', (e) => {
+      const r = e.target.closest('[data-r]')?.dataset.r;
+      if (r) done(r === 'ok' ? input.value : null);
+    });
+    input.addEventListener('keydown', (e) => e.key === 'Enter' && done(input.value));
+  });
+}
+
 function openSheet(title, html) {
   const wrap = document.createElement('div');
   wrap.className = 'sheet-wrap';
@@ -50,11 +85,12 @@ function openSheet(title, html) {
   return { el: wrap, q: (s) => wrap.querySelector(s), close };
 }
 
-export function showSettings({ count, onAuto, onRefresh, onClearCache }) {
+export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearCache, onWipe }) {
   const s = openSheet(
     'Настройки',
     `
     <div class="group">
+      <div class="row"><span>Аккаунт</span><span class="muted" id="acc">…</span></div>
       <div class="row"><span>В галерее</span><span class="muted">${photosCount(count)}</span></div>
     </div>
     <div class="group-title">Автозагрузка</div>
@@ -63,29 +99,55 @@ export function showSettings({ count, onAuto, onRefresh, onClearCache }) {
     </div>
     <div class="group-foot">«Быстрые команды» сами отправляют новые фото в галерею — после съёмки и каждый вечер.</div>
     <div class="group">
-      <button class="row link" id="refresh">Обновить список фото</button>
+      <button class="row link" id="reindex">Обновить список фото</button>
       <button class="row link" id="clear">Очистить кэш миниатюр <span class="muted" id="usage"></span></button>
     </div>
+    <div class="group-title">Люди и умный поиск</div>
+    <div class="group">
+      <div class="row"><span>Анализ фото</span><span class="muted">${indexer.enabled ? `${indexer.done.toLocaleString('ru')} из ${indexer.total.toLocaleString('ru')}` : 'выключен'}</span></div>
+      <button class="row link ${indexer.enabled ? 'danger' : ''}" id="ml">${indexer.enabled ? 'Выключить и удалить результаты анализа' : 'Включить'}</button>
+    </div>
+    <div class="group-foot">Лица и содержимое фото анализируются только на этом устройстве. Имена людей тоже хранятся здесь.</div>
     <div class="group-title">Где хранятся фото</div>
     <div class="group about">
       <div class="row">Все фото лежат в вашем личном чате с ботом. Удалите сообщение в чате — фото пропадёт и из Telegram.</div>
       <div class="row">Другие пользователи бота ваши фото не видят. Но владелец бота технически может получить к ним доступ — не загружайте то, что хотите скрыть ото всех.</div>
-    </div>`,
+    </div>
+    <div class="group">
+      <button class="row link danger" id="wipe">Стереть данные галереи на этом устройстве</button>
+    </div>
+    <div class="group-foot">Миниатюры, избранное, люди и их имена. Сами фото останутся в чате с ботом.</div>`,
   );
-  s.q('#auto').addEventListener('click', () => {
+  const q = s.q;
+  q('#auto').addEventListener('click', () => {
     s.close();
     onAuto();
   });
-  s.q('#refresh').addEventListener('click', () => {
+  q('#reindex').addEventListener('click', () => {
     s.close();
-    onRefresh();
+    onReindex();
   });
-  s.q('#clear').addEventListener('click', async () => {
+  q('#clear').addEventListener('click', async () => {
     await onClearCache();
-    s.q('#usage').textContent = fmtBytes(await storageUsage());
+    q('#usage').textContent = fmtBytes(await storageUsage());
     toast('Кэш очищен');
   });
-  storageUsage().then((u) => (s.q('#usage').textContent = fmtBytes(u)));
+  q('#ml').addEventListener('click', async () => {
+    if (indexer.enabled) {
+      await indexer.disable();
+      toast('Анализ выключен, данные удалены');
+    } else {
+      indexer.enable();
+      toast('Анализ включён');
+    }
+    s.close();
+  });
+  q('#wipe').addEventListener('click', () => {
+    s.close();
+    onWipe();
+  });
+  disk.me().then((m) => (q('#acc').textContent = m.name || '—'), () => (q('#acc').textContent = '—'));
+  storageUsage().then((u) => (q('#usage').textContent = fmtBytes(u)));
 }
 
 // ── Автозагрузка с iPhone: личный ключ для «Быстрых команд» ──

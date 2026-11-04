@@ -3,9 +3,8 @@ import { haptic } from './tg.js';
 import { isAbort } from './api.js';
 
 const COLS = [1, 3, 5, 9];
-// Размеры, которые хранит Telegram: thumb ~320 px, medium ~800 px, large — до 2560 px.
-const SIZE_FOR_COLS = { 1: 'large', 3: 'medium', 5: 'thumb', 9: 'thumb' };
-const ALL_SIZES = ['large', 'medium', 'thumb'];
+const SIZE_FOR_COLS = { 1: 'XL', 3: 'L', 5: 'M', 9: 'S' };
+const ALL_SIZES = ['XL', 'L', 'M', 'S'];
 const GAP = 2;
 
 const fmtDay = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' });

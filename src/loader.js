@@ -1,10 +1,11 @@
 // Очередь загрузки превью: ограничение параллельности, отмена ушедших с экрана,
 // приоритет последних запрошенных (то, что пользователь видит сейчас), кэш на диске и в памяти.
 import { isAbort } from './api.js';
+// disk — источник фото: сервер бота (api.js) или демо (mock-disk.js).
 
 export class PreviewLoader {
-  constructor(api, store, { concurrency = 8, persist = true, memLimit = 700 } = {}) {
-    this.api = api;
+  constructor(disk, store, { concurrency = 8, persist = true, memLimit = 700 } = {}) {
+    this.disk = disk;
     this.store = store;
     this.concurrency = concurrency;
     this.persist = persist;
@@ -16,8 +17,9 @@ export class PreviewLoader {
     this.dims = new Map(); // path -> [w, h] натуральный размер последнего загруженного превью
   }
 
+  // S и M (как и L и XL) в Telegram — один и тот же файл: не качаем и не храним его дважды.
   key(item, size) {
-    return size + '|' + item.p;
+    return (this.disk.sizeKey?.(size) || size) + '|' + item.p;
   }
 
   peek(item, size) {
@@ -98,11 +100,12 @@ export class PreviewLoader {
 
   async _run(job) {
     try {
-      let blob = this.persist ? await this.store.get(job.size, job.item.p) : null;
+      const sk = this.disk.sizeKey?.(job.size) || job.size;
+      let blob = this.persist ? await this.store.get(sk, job.item.p) : null;
       if (!blob) {
         if (job.controller.signal.aborted) return;
-        blob = await this.api.previewBlob(job.item, job.size, job.controller.signal);
-        if (this.persist) this.store.put(job.size, job.item.p, blob);
+        blob = await this.disk.previewBlob(job.item, job.size, job.controller.signal);
+        if (this.persist) this.store.put(sk, job.item.p, blob);
       }
       if (job.done) return;
       const url = URL.createObjectURL(blob);

@@ -1,13 +1,17 @@
 import './style.css';
-import { initTelegram, inTelegram, tg } from './tg.js';
-import { Api, isAbort } from './api.js';
+import { initTelegram, inTelegram, tg, haptic } from './tg.js';
+import { Api, normalize, isAbort } from './api.js';
 import { API_URL } from './config.js';
-import { loadIndex, saveIndex, previewStore } from './store.js';
+import { loadIndex, saveIndex, previewStore, wipeLocalData } from './store.js';
 import { PreviewLoader } from './loader.js';
 import { Library } from './library.js';
+import { Collections, openPage } from './collections.js';
+import { Search } from './search.js';
+import { Favorites } from './favorites.js';
 import { openViewer } from './viewer.js';
-import { showSettings, showAutoUpload, showMessage, toast } from './screens.js';
+import { showSettings, showAutoUpload, showMessage, toast, askText } from './screens.js';
 import { showUploadSheet, Uploader } from './upload.js';
+import { Indexer } from './ml/indexer.js';
 
 const FULL_REFRESH_MS = 24 * 3600 * 1000;
 const app = document.getElementById('app');
@@ -18,61 +22,120 @@ boot();
 async function boot() {
   // Демо без Telegram и сервера (только в режиме разработки): http://localhost:5173/?mock
   if (import.meta.env.DEV && new URLSearchParams(location.search).has('mock')) {
-    const { MockApi } = await import('./mock.js');
-    return start(new MockApi(), 'mock');
+    const { MockDisk } = await import('./mock-disk.js');
+    return startLibrary(new MockDisk(), 'mock');
   }
   if (!inTelegram) {
     return showMessage(app, { title: 'Фото в Telegram', text: 'Это приложение открывается внутри Telegram: откройте чат с ботом и нажмите «Открыть галерею».' });
   }
   if (!API_URL) return showMessage(app, { title: 'Не настроено', text: 'Не указан адрес сервера (VITE_API_URL). См. README.' });
-  const uid = tg.initDataUnsafe?.user?.id;
-  start(new Api(API_URL, tg.initData), 'u' + uid);
+  const user = tg.initDataUnsafe?.user || {};
+  // У каждого пользователя Telegram на этом устройстве — свои кэш, избранное и люди.
+  startLibrary(new Api(API_URL, tg.initData, user), 'u' + user.id);
 }
 
-async function start(api, ns) {
+async function startLibrary(disk, ns) {
   const store = previewStore('previews-' + ns);
-  const thumbs = new PreviewLoader(api, store, { concurrency: 8, persist: true, memLimit: 800 });
-  const bigs = new PreviewLoader(api, store, { concurrency: 3, persist: false, memLimit: 16 });
+  const thumbs = new PreviewLoader(disk, store, { concurrency: 8, persist: true, memLimit: 800 });
+  const bigs = new PreviewLoader(disk, store, { concurrency: 3, persist: false, memLimit: 16 });
+
   let all = [];
   let refreshing = null;
+  const favorites = new Favorites(ns);
+  favorites.load();
 
-  const library = new Library(app, {
+  const apply = () => {
+    library.setItems(all);
+    indexer.setItems(all);
+    collections.setItems(all);
+    search.setItems(all);
+  };
+
+  // Каркас: три вкладки и таб-бар внизу, как в «Фото» на iPhone.
+  app.innerHTML = `
+    <div class="tab" data-tab="library"></div>
+    <div class="tab" data-tab="collections"></div>
+    <div class="tab" data-tab="search"></div>
+    <nav class="tabbar">
+      <button data-tab="library"><svg viewBox="0 0 28 28" width="26" height="26"><rect x="3" y="7" width="18" height="16" rx="3.5" fill="currentColor"/><path d="M7.5 4.5h14A3.5 3.5 0 0 1 25 8v12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Медиатека</span></button>
+      <button data-tab="collections"><svg viewBox="0 0 28 28" width="26" height="26"><rect x="3" y="3" width="10" height="10" rx="2.5" fill="currentColor"/><rect x="15" y="3" width="10" height="10" rx="2.5" fill="currentColor" opacity=".55"/><rect x="3" y="15" width="10" height="10" rx="2.5" fill="currentColor" opacity=".55"/><rect x="15" y="15" width="10" height="10" rx="2.5" fill="currentColor"/></svg><span>Коллекции</span></button>
+      <button data-tab="search"><svg viewBox="0 0 28 28" width="26" height="26"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="m17.6 17.6 6 6" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></svg><span>Поиск</span></button>
+    </nav>`;
+  const tabEl = (name) => app.querySelector(`.tab[data-tab="${name}"]`);
+  const showTab = (name) => {
+    app.querySelectorAll('[data-tab]').forEach((e) => e.classList.toggle('active', e.dataset.tab === name));
+  };
+  app.querySelector('.tabbar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (!b) return;
+    showTab(b.dataset.tab);
+    haptic('light');
+  });
+  showTab('library');
+
+  const indexer = new Indexer({ ns, disk, store });
+  if (import.meta.env.DEV) window.__ix = indexer; // для отладки в браузере
+  const askName = (current) =>
+    askText({ title: current ? 'Изменить имя' : 'Кто это?', message: 'Если дать двум карточкам одно имя, они объединятся.', value: current, placeholder: 'Имя' });
+  const openV = (items, index, host) => openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast });
+  const collections = new Collections(tabEl('collections'), {
     loader: thumbs,
-    onOpen: (items, index, host) => openViewer({ items, index, thumbs, bigs, api, host, toast }),
+    favorites,
+    indexer,
+    askName,
+    openPage: (opts) => openPage(tabEl('collections'), { ...opts, loader: thumbs, onOpen: openV }),
+  });
+  const search = new Search(tabEl('search'), { loader: thumbs, onOpen: openV, indexer });
+
+  const library = new Library(tabEl('library'), {
+    loader: thumbs,
+    onOpen: openV,
     onUpload: () => showUploadSheet({ onFiles: (files, mode) => uploader.add(files, mode) }),
     onSettings: () =>
       showSettings({
+        disk,
         count: all.length,
-        onAuto: () => showAutoUpload({ api }),
-        onRefresh: () => refresh(true),
+        indexer,
+        onAuto: () => showAutoUpload({ api: disk }),
+        onReindex: () => refresh(true),
         onClearCache: async () => {
           thumbs.clearMemory();
           await store.clear();
           library.setItems(all);
         },
+        onWipe: async () => {
+          // На устройстве не остаётся ничего: список фото, миниатюры, лица, имена, избранное.
+          // Сами фото остаются в чате с ботом — при следующем открытии список загрузится заново.
+          thumbs.clearMemory();
+          bigs.clearMemory();
+          await indexer.disable();
+          await wipeLocalData(ns);
+          await favorites.clear();
+          location.reload();
+        },
       }),
   });
 
-  // В элементах списка поле p — строковый ключ фото (по нему работают сетка и кэш миниатюр).
-  const norm = (it) => ((it.p = String(it.i)), it);
+  const persist = (updated) => disk.kind === 'mock' || saveIndex(ns, { items: all, updated });
   const setAll = (items) => {
     items.sort((a, b) => a.t - b.t || a.i - b.i);
     all = items;
-    library.setItems(all);
+    apply();
   };
-  const persist = (updated) => api.kind === 'mock' || saveIndex(ns, { items: all, updated });
+  const addItems = async (fresh) => {
+    const known = new Set(all.map((it) => it.p));
+    fresh = fresh.filter((it) => !known.has(it.p));
+    if (!fresh.length) return;
+    setAll(all.concat(fresh));
+    const prev = (await loadIndex(ns)) || {};
+    await persist(prev.updated || Date.now());
+  };
 
   const uploader = new Uploader({
-    api,
+    api: disk,
     toast,
     onState: (s) => library.setUpload(s),
-    onItems: (items) => {
-      const known = new Set(all.map((it) => it.i));
-      const fresh = items.map(norm).filter((it) => !known.has(it.i));
-      if (!fresh.length) return;
-      setAll(all.concat(fresh));
-      loadIndex(ns).then((prev) => persist(prev?.updated || Date.now()));
-    },
+    onItems: (items) => addItems(items.map(normalize)),
   });
 
   async function refresh(full) {
@@ -81,19 +144,12 @@ async function start(api, ns) {
     refreshing = (async () => {
       try {
         if (full) {
-          const items = (await api.list(0, (n) => library.setBusy(true, `Загружаю список фото… ${n.toLocaleString('ru')}`))).map(norm);
+          const items = await disk.listAll((n) => library.setBusy(true, `Загружаю список фото… ${n.toLocaleString('ru')}`));
           setAll(items);
           await persist(Date.now());
         } else {
-          // Быстрое обновление: только фото, которые появились после последнего известного.
-          const last = all.reduce((m, it) => Math.max(m, it.i), 0);
-          const fresh = (await api.list(last)).map(norm);
-          if (fresh.length) {
-            const known = new Set(all.map((it) => it.i));
-            setAll(all.concat(fresh.filter((it) => !known.has(it.i))));
-            const prev = (await loadIndex(ns)) || {};
-            await persist(prev.updated || Date.now());
-          }
+          // Быстрое обновление: только фото, которые появились после самого свежего известного.
+          await addItems(await disk.recent(all));
         }
       } catch (e) {
         if (!isAbort(e)) toast(e.message || 'Ошибка сети');
@@ -106,11 +162,11 @@ async function start(api, ns) {
     return refreshing;
   }
 
-  // Вернулись в приложение (например, прислали фото в чат) — подтягиваем новые.
+  // Вернулись в приложение (например, прислали фото боту в чат) — подтягиваем новые.
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && refresh(false));
   if (inTelegram) tg.onEvent('activated', () => refresh(false));
 
-  const cached = api.kind === 'mock' ? null : await loadIndex(ns);
+  const cached = disk.kind === 'mock' ? null : await loadIndex(ns);
   if (cached?.items?.length) {
     setAll(cached.items);
     refresh(Date.now() - (cached.updated || 0) > FULL_REFRESH_MS);

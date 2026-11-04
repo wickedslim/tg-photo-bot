@@ -307,9 +307,7 @@ input { font: inherit; color: inherit; }
 
 .v-info-btn { display: block; margin-top: 12px; padding: 6px 0; color: var(--tint); font-size: 16px; font-weight: 500; }
 
-/* ═══ Дополнения для «Фото в Telegram» ═══ */
-/* Таб-бара нет — переключатель «Годы / Месяцы / Все фото» стоит у нижнего края. */
-:root { --tabbar-h: 0px; }
+/* ═══ Дополнения для «Фото в Telegram» (загрузка, автозагрузка) ═══ */
 
 .empty-title { font-size: 20px; font-weight: 700; color: var(--text); }
 .empty > div:last-child { max-width: 300px; }

@@ -15,17 +15,17 @@ const apiOrigin = (() => {
 // Политика безопасности страницы (CSP). Даже если в приложение как-то попадёт чужой код,
 // браузер не даст ему загрузить свои скрипты или отправить данные куда-то, кроме нашего сервера.
 //  - скрипты: только наш сайт, официальный скрипт Telegram и маленький загрузчик ниже (по его хэшу);
-//  - запросы: только наш сайт и наш сервер на Cloudflare;
+//  - запросы: наш сайт, наш сервер на Cloudflare и Hugging Face (веса моделей для умного поиска);
 //  - картинки: только наши и скачанные с сервера (blob:).
 // В режиме разработки не добавляем — там Vite нужен свой вебсокет, а демо берёт фото с picsum.photos.
 const csp = (loaderHash) =>
   [
     "default-src 'self'",
-    `script-src 'self' https://telegram.org '${loaderHash}'`,
+    `script-src 'self' https://telegram.org 'wasm-unsafe-eval' '${loaderHash}'`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' blob: data:",
-    `connect-src 'self' blob:${apiOrigin ? ' ' + apiOrigin : ''}`,
-    "worker-src 'none'",
+    `connect-src 'self' blob:${apiOrigin ? ' ' + apiOrigin : ''} https://huggingface.co https://*.huggingface.co https://*.hf.co`,
+    "worker-src 'self' blob:",
     "font-src 'self'",
     "frame-src 'none'",
     "object-src 'none'",
@@ -102,5 +102,7 @@ export default defineConfig({
   base: './',
   plugins: [shell],
   build: { target: 'es2022' },
+  // Фоновый поток с моделями — ES-модуль (нужен для динамических импортов внутри transformers.js).
+  worker: { format: 'es' },
   server: { host: true },
 });

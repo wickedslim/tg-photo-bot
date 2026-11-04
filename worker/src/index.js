@@ -13,6 +13,7 @@
 
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
+import { readExif } from './exif.js';
 import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
@@ -140,8 +141,29 @@ async function webhook(request, env) {
     );
   }
   const rec = extractPhoto(msg);
-  if (rec) await savePhotos(env.DB, uid, [rec]);
+  if (rec) {
+    if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
+    await savePhotos(env.DB, uid, [rec]);
+  }
   return new Response('ok');
+}
+
+// Картинку, присланную файлом, Telegram не трогает — в ней сохранились дата съёмки и место.
+// Читаем только начало файла (там EXIF), чтобы не качать его целиком.
+async function docMeta(env, rec) {
+  if (!rec.size || rec.size > MAX_DOWNLOAD) return {};
+  try {
+    const path = await filePath(env.BOT_TOKEN, rec.orig_id);
+    const r = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${path}`, { headers: { range: 'bytes=0-262143' } });
+    if (!r.ok) return {};
+    const buf = new Uint8Array(await r.arrayBuffer()).subarray(0, 262144);
+    const ex = readExif(buf);
+    const out = place(ex);
+    if (ex.taken && ex.taken > Date.UTC(1990, 0, 1) && ex.taken < Date.now() + 86400000) out.taken = ex.taken;
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 // Ответ прямо в теле ответа на вебхук — Telegram выполнит его сам, лишний запрос не нужен.
@@ -174,6 +196,13 @@ const cleanName = (n, fallback) =>
 
 const IMAGE_NAME = /\.(jpe?g|png|webp|gif|heic|heif|avif|bmp|tiff?|dng)$/i;
 
+function place(m) {
+  const la = Number(m?.la);
+  const lo = Number(m?.lo);
+  if (m?.la == null || m?.lo == null || !Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180 || (!la && !lo)) return {};
+  return { lat: +la.toFixed(6), lon: +lo.toFixed(6) };
+}
+
 function num(v, min, max) {
   const n = Number(v);
   return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : null;
@@ -205,6 +234,7 @@ async function upload(request, env) {
   if (!Array.isArray(meta)) meta = [];
   // Простой вариант для «Быстрых команд»: одно фото в полях file, thumb и taken (дата съёмки текстом).
   if (form.get('taken') && !meta[0]) meta[0] = { taken: Date.parse(form.get('taken')) };
+  if (form.get('la') && form.get('lo')) Object.assign((meta[0] ||= {}), { la: Number(form.get('la')), lo: Number(form.get('lo')) });
 
   const files = [];
   const seen = new Set();
@@ -222,13 +252,21 @@ async function upload(request, env) {
     let thumb = asDoc ? (form.get('t' + i) ?? (i === 0 ? form.get('thumb') : null)) : null;
     if (thumb && (typeof thumb === 'string' || !thumb.size || thumb.size > MAX_THUMB)) thumb = null;
     // Одно и то же фото дважды не загружаем: автозагрузка может прислать его повторно.
-    const hash = await sha256(await f.arrayBuffer());
+    const buf = await f.arrayBuffer();
+    const hash = await sha256(buf);
     if (seen.has(hash) || (await hasHash(env.DB, uid, hash))) {
       skipped++;
       continue;
     }
     seen.add(hash);
-    files.push({ f, name, thumb, hash, meta: meta[i] || {} });
+    // Дата и место: что прислало приложение, иначе — из EXIF самого файла (если он его сохранил).
+    const m = { ...(meta[i] || {}) };
+    if (m.taken == null || m.la == null) {
+      const ex = readExif(new Uint8Array(buf, 0, Math.min(buf.byteLength, 512 * 1024)));
+      m.taken ??= ex.taken;
+      if (m.la == null && ex.la != null) Object.assign(m, { la: ex.la, lo: ex.lo });
+    }
+    files.push({ f, name, thumb, hash, meta: m });
   }
   if (!files.length && !skipped) throw new HttpError(400, 'bad_request', 'Нет файлов');
   const now = Date.now();
@@ -280,6 +318,7 @@ async function upload(request, env) {
     if (!rec || !src) return;
     // Дата съёмки — из EXIF, которую прочитало приложение (Telegram её у фото стирает).
     rec.taken = takenOf(src.meta);
+    Object.assign(rec, place(src.meta));
     rec.hash = src.hash;
     rec.source = source;
     if (rec.kind === 'doc') {

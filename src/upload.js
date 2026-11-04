@@ -5,7 +5,7 @@
 // Отправляем альбомами до 10 фото. Если Telegram просит подождать — ждём столько, сколько он сказал.
 import { haptic, pushBack } from './tg.js';
 import { sleep, isAbort } from './api.js';
-import { takenDate } from './exif.js';
+import { photoMeta } from './exif.js';
 
 const BATCH = 10;
 const BATCH_BYTES = 40 * 1024 * 1024; // запрос к серверу — до 100 МБ; берём с запасом
@@ -92,23 +92,26 @@ const baseName = (n) => (n || 'photo').replace(/\.[^.]+$/, '');
 
 // Возвращает { mode, file, thumb, meta } или бросает ошибку с понятным текстом.
 async function prepare(file, mode) {
-  const taken = (await takenDate(file)) || file.lastModified || Date.now();
+  // Дату и место читаем до уменьшения: при перекодировании в JPEG (и в Telegram) они стираются.
+  const ex = await photoMeta(file);
+  const taken = ex.taken || file.lastModified || Date.now();
+  const geo = ex.la != null ? { la: ex.la, lo: ex.lo } : {};
   if (mode === 'photo') {
     const bmp = await decode(file);
     if (bmp) {
       const blob = await toJpeg(bmp, PHOTO_SIDE, 0.9);
-      const meta = { taken, w: bmp.width, h: bmp.height };
+      const meta = { taken, w: bmp.width, h: bmp.height, ...geo };
       bmp.close();
       if (blob && blob.size <= MAX_PHOTO) return { mode, file: new File([blob], baseName(file.name) + '.jpg', { type: 'image/jpeg' }), meta };
     }
     // Не получилось уменьшить — отправим как есть: фото, если Telegram такое примет, иначе файлом.
-    if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size <= MAX_PHOTO) return { mode, file, meta: { taken } };
+    if (/^image\/(jpeg|png|webp)$/.test(file.type) && file.size <= MAX_PHOTO) return { mode, file, meta: { taken, ...geo } };
     mode = 'doc';
   }
   if (file.size > MAX_DOC) throw new Error(`«${file.name}» больше 50 МБ — Telegram такие файлы от ботов не принимает`);
   const bmp = await decode(file);
   let thumb = null;
-  const meta = { taken };
+  const meta = { taken, ...geo };
   if (bmp) {
     meta.w = bmp.width;
     meta.h = bmp.height;

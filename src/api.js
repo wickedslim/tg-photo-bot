@@ -12,9 +12,24 @@ export class ApiError extends Error {
 
 export const isAbort = (e) => e?.name === 'AbortError';
 
+// Размеры превью, как их называет галерея, → какие есть в Telegram (~320, ~800 и до 2560 px).
+const SIZE = { S: 'thumb', M: 'thumb', L: 'medium', XL: 'medium', XXL: 'large', XXXL: 'large' };
+export const sizeKey = (size) => SIZE[size] || size;
+
+// Альбомы — по тому, откуда пришло фото (в Telegram нет папок).
+const ALBUM = { app: 'Загружено', auto: 'Автозагрузка' };
+
+// Запись с сервера → фото в том виде, в каком его понимает галерея:
+// p — уникальный «путь» (по нему кэш, избранное, люди), n — имя, t — дата, la/lo — место.
+export function normalize(it) {
+  const n = it.n || `IMG_${it.i}.jpg`;
+  return { ...it, n, p: `disk:/${ALBUM[it.o] || 'Из чата'}/${it.i}_${n}` };
+}
+
 export class Api {
-  constructor(base, initData) {
+  constructor(base, initData, user) {
     this.kind = 'real';
+    this.user = user || {};
     this.base = base.replace(/\/+$/, '');
     this.initData = initData;
     this.fileToken = null;
@@ -47,6 +62,27 @@ export class Api {
     }
   }
 
+  // ── То, что ждёт от «диска» код галереи ──
+  sizeKey(size) {
+    return sizeKey(size);
+  }
+  async me() {
+    const u = this.user;
+    return { uid: String(u.id || ''), name: [u.first_name, u.last_name].filter(Boolean).join(' ') || (u.username ? '@' + u.username : '') };
+  }
+  async listAll(onProgress) {
+    return (await this.list(0, onProgress)).map(normalize);
+  }
+  // Только новые: с номером больше самого свежего из уже известных.
+  async recent(known = []) {
+    const last = known.reduce((m, it) => Math.max(m, it.i || 0), 0);
+    return (await this.list(last)).map(normalize);
+  }
+  async originalUrl(item) {
+    if (!this.fileToken) await this.refreshToken();
+    return this.fileUrl(item, 'orig', { download: true });
+  }
+
   // Токен для файлов живёт сутки; если истёк — тихо берём новый.
   refreshToken() {
     return (this.refreshing ||= this.req('/api/list?after=9007199254740991')
@@ -55,7 +91,7 @@ export class Api {
   }
 
   fileUrl(item, size, { download = false } = {}) {
-    return `${this.base}/api/file/${item.i}?s=${size}&k=${encodeURIComponent(this.fileToken || '')}${download ? '&dl=1' : ''}`;
+    return `${this.base}/api/file/${item.i}?s=${sizeKey(size)}&k=${encodeURIComponent(this.fileToken || '')}${download ? '&dl=1' : ''}`;
   }
 
   async previewBlob(item, size, signal) {

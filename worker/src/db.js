@@ -1,16 +1,16 @@
 // Работа с базой D1: одна таблица photos, у каждой записи есть владелец user_id.
 // Все запросы на чтение фильтруют по user_id — чужие фото не видны и не скачиваются.
 
-const COLS = ['user_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source'];
+const COLS = ['user_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon'];
 
 const UPSERT = `INSERT INTO photos (${COLS.join(', ')}) VALUES (${COLS.map(() => '?').join(', ')})
   ON CONFLICT (user_id, message_id) DO UPDATE SET
     kind = excluded.kind, size = excluded.size, name = excluded.name, mime = excluded.mime, caption = excluded.caption,
     width = COALESCE(excluded.width, photos.width), height = COALESCE(excluded.height, photos.height),
-    taken = COALESCE(excluded.taken, photos.taken),
+    taken = COALESCE(excluded.taken, photos.taken), lat = COALESCE(excluded.lat, photos.lat), lon = COALESCE(excluded.lon, photos.lon),
     thumb_id = excluded.thumb_id, medium_id = excluded.medium_id, large_id = excluded.large_id, orig_id = excluded.orig_id,
     sizes = excluded.sizes, hash = COALESCE(excluded.hash, photos.hash)
-  RETURNING id, date, taken, kind, width, height, size, name, caption`;
+  RETURNING id, date, taken, kind, width, height, size, name, caption, source, lat, lon`;
 
 export function upsertStmt(db, userId, rec) {
   const row = { ...rec, user_id: userId };
@@ -33,7 +33,7 @@ export async function savePhotos(db, userId, recs) {
 
 export async function listPhotos(db, userId, { after = 0, limit = 2000 } = {}) {
   const { results } = await db
-    .prepare('SELECT id, date, taken, kind, width, height, size, name, caption FROM photos WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?')
+    .prepare('SELECT id, date, taken, kind, width, height, size, name, caption, source, lat, lon FROM photos WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?')
     .bind(userId, after, limit)
     .all();
   return results;
@@ -54,6 +54,11 @@ export function toItem(r) {
   if (r.size) it.s = r.size;
   if (r.name) it.n = r.name;
   if (r.caption) it.c = r.caption;
+  if (r.source && r.source !== 'chat') it.o = r.source;
+  if (r.lat != null && r.lon != null) {
+    it.la = r.lat;
+    it.lo = r.lon;
+  }
   return it;
 }
 

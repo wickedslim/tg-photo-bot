@@ -1,10 +1,13 @@
-// Локальный кэш на телефоне: список фото — в IndexedDB, миниатюры — в Cache Storage браузера.
-// У каждого пользователя Telegram своё пространство имён (ns), чтобы фото разных аккаунтов не смешивались.
-import { get, set, del } from 'idb-keyval';
+// Локальный кэш: индекс фото — в IndexedDB, превью — в Cache Storage браузера.
+import { get, set, del, createStore, clear } from 'idb-keyval';
 
-const indexKey = (ns) => `index-v1:${ns}`;
+// v2: в первой версии у фото не было «пути» p, который нужен коллекциям и поиску.
+const indexKey = (ns) => `index-v2:${ns}`;
 
-export const loadIndex = (ns) => get(indexKey(ns));
+export const loadIndex = (ns) => {
+  del(`index-v1:${ns}`).catch(() => {});
+  return get(indexKey(ns));
+};
 export const saveIndex = (ns, data) => set(indexKey(ns), data);
 export const clearIndex = (ns) => del(indexKey(ns));
 
@@ -14,19 +17,19 @@ export function previewStore(name) {
     if (!('caches' in window)) return Promise.resolve(null);
     return (opened ||= caches.open(name).catch(() => null));
   };
-  const key = (size, id) => location.origin + '/__preview/' + size + '/' + encodeURIComponent(id);
+  const key = (size, path) => location.origin + '/__preview/' + size + '/' + encodeURIComponent(path);
 
   return {
-    async get(size, id) {
+    async get(size, path) {
       const c = await open();
-      const r = c && (await c.match(key(size, id)));
+      const r = c && (await c.match(key(size, path)));
       return r ? r.blob() : null;
     },
-    async put(size, id, blob) {
+    async put(size, path, blob) {
       const c = await open();
       if (!c) return;
       const res = new Response(blob, { headers: { 'content-type': blob.type || 'image/jpeg' } });
-      await c.put(key(size, id), res).catch(() => {});
+      await c.put(key(size, path), res).catch(() => {});
     },
     async clear() {
       opened = null;
@@ -42,4 +45,16 @@ export async function storageUsage() {
   } catch {
     return 0;
   }
+}
+
+// Всё, что приложение хранит на устройстве: список фото, миниатюры, результаты анализа лиц и имена людей.
+export async function wipeLocalData(ns) {
+  const tasks = [
+    clearIndex(ns),
+    clear(createStore(`ml-${ns}-photos`, 'kv')),
+    clear(createStore(`ml-${ns}-clusters`, 'kv')),
+    'caches' in window ? caches.delete('previews-' + ns) : null,
+  ];
+  await Promise.allSettled(tasks);
+  for (const k of [`people-names-${ns}`, `ml-enabled-${ns}`]) localStorage.removeItem(k);
 }

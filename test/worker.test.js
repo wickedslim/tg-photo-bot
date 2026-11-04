@@ -2,10 +2,11 @@
 // Вместо Telegram — подставной сервер, который запоминает, куда бот отправлял фото.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { signInitData } from '../worker/src/auth.js';
+import { jpegWithExif } from './exif-fixture.js';
 
 const TOKEN = '123456:TEST-token';
 const SECRET = 'hook-secret';
@@ -21,7 +22,11 @@ function fakeTelegram(request) {
   const url = new URL(request.url);
   if (url.hostname !== 'api.telegram.org') return new Response('нет сети', { status: 502 });
   const fileM = url.pathname.match(/^\/file\/bot[^/]+\/(.+)$/);
-  if (fileM) return new Response(`IMG:${fileM[1]}`, { headers: { 'content-type': 'application/octet-stream' } });
+  if (fileM) {
+    // Файлы-документы с «exif» в имени — настоящий JPEG с датой и местом съёмки.
+    if (fileM[1].includes('exif')) return new Response(jpegWithExif(), { headers: { 'content-type': 'image/jpeg' } });
+    return new Response(`IMG:${fileM[1]}`, { headers: { 'content-type': 'application/octet-stream' } });
+  }
   const method = url.pathname.split('/').pop();
   return (async () => {
     const form = request.headers.get('content-type')?.includes('multipart') ? await request.formData() : null;
@@ -55,7 +60,12 @@ before(async () => {
     outboundService: fakeTelegram,
   });
   const db = await mf.getD1Database('DB');
-  const sql = readFileSync('worker/migrations/0001_init.sql', 'utf8').replace(/--.*$/gm, '');
+  const sql = readdirSync('worker/migrations')
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => readFileSync('worker/migrations/' + f, 'utf8'))
+    .join(';\n')
+    .replace(/--.*$/gm, '');
   for (const stmt of sql.split(';').map((s) => s.trim()).filter(Boolean)) await db.prepare(stmt).run();
 });
 
@@ -219,6 +229,30 @@ test('ключ автозагрузки: загружает только в св
   await api('/api/auto/key', { user: A, method: 'DELETE' });
   assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key ' + next.key } })).status, 401);
   assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key tgp_' + 'x'.repeat(32) } })).status, 401);
+});
+
+test('дата и место съёмки: из файла, присланного боту, и из загрузки без данных приложения', async () => {
+  const C = 333;
+  await hook({
+    update_id: 500,
+    message: { message_id: 500, date: 1700000000, from: { id: C, first_name: 'T' }, chat: { id: C, type: 'private' }, document: { file_id: 'doc_exif', file_unique_id: 'x', file_name: 'IMG_1.JPG', mime_type: 'image/jpeg', file_size: 3000 } },
+  });
+  // сжатое фото из чата — даты съёмки нет, остаётся дата сообщения
+  await hook(photoMsg(C, 501));
+  let items = (await listOf(C)).items;
+  assert.equal(items[0].t, Date.parse('2023-07-15T14:30:00+03:00'));
+  assert.equal(items[0].la, 55.76);
+  assert.equal(items[0].lo, 37.62);
+  assert.equal(items[1].t, (1700000000 + 501) * 1000);
+  assert.equal(items[1].la, undefined);
+
+  // загрузка без meta (как из «Быстрой команды»): дату и место сервер читает из самого файла
+  const form = new FormData();
+  form.set('file', new File([jpegWithExif({ date: '2024:01:02 10:00:00' })], 'IMG_2.jpg', { type: 'image/jpeg' }));
+  const body = await (await api('/api/upload', { user: C, method: 'POST', body: form })).json();
+  assert.equal(body.items[0].t, Date.parse('2024-01-02T10:00:00+03:00'));
+  assert.equal(body.items[0].la, 55.76);
+  assert.equal(body.items[0].o, 'app');
 });
 
 test('CORS: чужой сайт не получает разрешения', async () => {
