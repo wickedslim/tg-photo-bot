@@ -132,6 +132,11 @@ export class Api {
     });
   }
 
+  // Удалить фото. Ответ: chat = 'deleted' (и из чата) или 'kept' (сообщение старое — удалите в чате сами).
+  deletePhoto(item) {
+    return this.req(`/api/photo/${item.i}`, { method: 'DELETE' });
+  }
+
   // Ключ автозагрузки для «Быстрых команд».
   autoKeyInfo() {
     return this.req('/api/auto/key');

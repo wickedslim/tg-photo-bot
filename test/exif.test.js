@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readExif } from '../worker/src/exif.js';
+import { readFileSync } from 'node:fs';
 import { jpegWithExif } from './exif-fixture.js';
 
 test('дата съёмки с часовым поясом и место', () => {
@@ -22,4 +23,11 @@ test('нет EXIF или мусор — пусто, без ошибок', () => 
   const broken = jpegWithExif();
   broken.fill(0xff, 20, 60);
   assert.doesNotThrow(() => readExif(broken));
+});
+
+test('настоящий HEIC (как с iPhone): дата и место', () => {
+  const ex = readExif(new Uint8Array(readFileSync('test/fixtures/iphone.heic')));
+  assert.equal(ex.taken, Date.parse('2023-07-15T14:30:00+03:00'));
+  assert.equal(ex.la, 55.76);
+  assert.equal(ex.lo, 37.62);
 });

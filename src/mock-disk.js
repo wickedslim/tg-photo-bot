@@ -103,6 +103,12 @@ export class MockDisk {
     return { ok: true, items, skipped: 0 };
   }
 
+  async deletePhoto(item) {
+    this.local.delete(item.i);
+    await new Promise((r) => setTimeout(r, 300));
+    return { ok: true, chat: 'deleted' };
+  }
+
   async autoKeyInfo() {
     return { exists: Boolean(this.key), created: this.key?.created, used: null, cursor: null, base: 'https://tg-photo-bot.example.workers.dev' };
   }

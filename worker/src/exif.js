@@ -13,9 +13,11 @@ export function readExif(bytes) {
   }
 }
 
+// Ищем «Exif\0\0», за которым идёт заголовок TIFF. Прыгаем по буквам «E» встроенным indexOf —
+// так быстро даже на файле в несколько мегабайт (у HEIC блок EXIF бывает не в самом начале).
 function findExif(b) {
-  for (let i = 0; i < b.length - 10; i++) {
-    if (b[i] === 0x45 && b[i + 1] === 0x78 && b[i + 2] === 0x69 && b[i + 3] === 0x66 && b[i + 4] === 0 && b[i + 5] === 0) {
+  for (let i = b.indexOf(0x45); i >= 0 && i < b.length - 10; i = b.indexOf(0x45, i + 1)) {
+    if (b[i + 1] === 0x78 && b[i + 2] === 0x69 && b[i + 3] === 0x66 && b[i + 4] === 0 && b[i + 5] === 0) {
       const t = i + 6;
       if ((b[t] === 0x49 && b[t + 1] === 0x49) || (b[t] === 0x4d && b[t + 1] === 0x4d)) return t;
     }

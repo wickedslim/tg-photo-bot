@@ -77,7 +77,19 @@ async function startLibrary(disk, ns) {
   if (import.meta.env.DEV) window.__ix = indexer; // для отладки в браузере
   const askName = (current) =>
     askText({ title: current ? 'Изменить имя' : 'Кто это?', message: 'Если дать двум карточкам одно имя, они объединятся.', value: current, placeholder: 'Имя' });
-  const openV = (items, index, host) => openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast });
+  const openV = (items, index, host) => openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete: removeItem });
+
+  // Удаление: сервер убирает фото из базы и (если Telegram разрешит) из чата, мы — из ленты и избранного.
+  async function removeItem(it) {
+    const res = await disk.deletePhoto(it);
+    if (favorites.has(it.p)) favorites.toggle(it.p);
+    all = all.filter((x) => x.p !== it.p);
+    apply();
+    const prev = (await loadIndex(ns)) || {};
+    await persist(prev.updated || Date.now());
+    haptic('medium');
+    toast(res?.chat === 'kept' ? 'Удалено из галереи. В чате сообщение старше 48 часов — удалите его там вручную' : 'Фото удалено');
+  }
   const collections = new Collections(tabEl('collections'), {
     loader: thumbs,
     favorites,

@@ -42,7 +42,12 @@ function fakeTelegram(request) {
     if (method === 'getFile') result = { file_id: body.file_id, file_path: `photos/${body.file_id}.jpg` };
     else if (method === 'sendPhoto') result = msg({ photo: photo('p' + msgId) });
     else if (method === 'sendDocument') result = msg({ document: { file_id: 'd' + msgId, file_unique_id: 'du' + msgId, file_name: 'IMG.HEIC', mime_type: 'image/heic', file_size: 3000000 } });
-    else if (method === 'sendMediaGroup') result = JSON.parse(body.media).map(() => msg({ photo: photo('g' + msgId) }));
+    else if (method === 'deleteMessage') {
+      // Сообщение №10 «старое» — Telegram не даёт боту его удалить.
+      sent.push({ method, chat_id: Number(body.chat_id), message_id: body.message_id });
+      if (body.message_id === 10) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted for everyone" });
+      return Response.json({ ok: true, result: true });
+    } else if (method === 'sendMediaGroup') result = JSON.parse(body.media).map(() => msg({ photo: photo('g' + msgId) }));
     else return Response.json({ ok: false, error_code: 400, description: 'unknown method' });
     sent.push({ method, chat_id: Number(body.chat_id) });
     return Response.json({ ok: true, result });
@@ -253,6 +258,52 @@ test('дата и место съёмки: из файла, присланног
   assert.equal(body.items[0].t, Date.parse('2024-01-02T10:00:00+03:00'));
   assert.equal(body.items[0].la, 55.76);
   assert.equal(body.items[0].o, 'app');
+});
+
+test('HEIC с iPhone из «Быстрой команды» без конвертации уходит файлом, дата и место — из самого файла', async () => {
+  const D = 444;
+  const { key } = await (await api('/api/auto/key', { user: D, method: 'POST' })).json();
+  sent.length = 0;
+  const form = new FormData();
+  form.set('mode', 'photo'); // забыли шаг «Конвертировать» — сервер сам отправит файлом
+  form.set('file', new File([readFileSync('test/fixtures/iphone.heic')], 'IMG_0001.HEIC', { type: 'image/heic' }));
+  const r = await api('/api/upload', { headers: { authorization: 'Key ' + key }, method: 'POST', body: form });
+  assert.equal(r.status, 200, await r.clone().text());
+  assert.deepEqual(sent, [{ method: 'sendDocument', chat_id: D }]);
+  const it = (await r.json()).items[0];
+  assert.equal(it.k, 'd');
+  assert.equal(it.t, Date.parse('2023-07-15T14:30:00+03:00'));
+  assert.equal(it.la, 55.76);
+  assert.equal(it.lo, 37.62);
+  assert.equal(it.o, 'auto');
+  // и курсор автозагрузки сдвинулся на дату этого снимка
+  assert.equal(await (await api('/api/auto/since', { headers: { authorization: 'Key ' + key } })).text(), '2023-07-15T11:29:59Z');
+});
+
+test('удаление: своё — из галереи и из чата, чужое — нельзя, старое сообщение — только из галереи', async () => {
+  const before = (await listOf(A)).items;
+  const last = before[before.length - 1];
+  // B не может удалить фото A
+  assert.equal((await api(`/api/photo/${last.i}`, { user: B, method: 'DELETE' })).status, 404);
+  assert.equal((await listOf(A)).items.length, before.length);
+  // без входа — тоже нельзя
+  assert.equal((await api(`/api/photo/${last.i}`, { method: 'DELETE' })).status, 401);
+
+  sent.length = 0;
+  const r = await (await api(`/api/photo/${last.i}`, { user: A, method: 'DELETE' })).json();
+  assert.equal(r.chat, 'deleted');
+  assert.equal(sent[0].method, 'deleteMessage');
+  assert.equal(sent[0].chat_id, A);
+  assert.ok(!(await listOf(A)).items.some((it) => it.i === last.i));
+  // файл удалённого фото больше не отдаётся
+  const { fileToken } = await listOf(A);
+  assert.equal((await api(`/api/file/${last.i}?k=${fileToken}`)).status, 404);
+
+  // сообщение №10 «старое»: из галереи пропадает, в чате остаётся — приложение подскажет удалить его вручную
+  const first = (await listOf(A)).items[0];
+  const r2 = await (await api(`/api/photo/${first.i}`, { user: A, method: 'DELETE' })).json();
+  assert.equal(r2.chat, 'kept');
+  assert.ok(!(await listOf(A)).items.some((it) => it.i === first.i));
 });
 
 test('CORS: чужой сайт не получает разрешения', async () => {

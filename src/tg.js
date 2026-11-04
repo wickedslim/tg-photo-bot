@@ -158,3 +158,17 @@ export function downloadViaTelegram(url, fileName) {
     }
   });
 }
+
+// Вопрос «Удалить?» с красной кнопкой: в Telegram — его собственное окно, в браузере — стандартное.
+export function confirmDestructive({ title, message, ok }) {
+  if (can('6.2') && tg.showPopup) {
+    return new Promise((resolve) => {
+      try {
+        tg.showPopup({ title, message, buttons: [{ id: 'ok', type: 'destructive', text: ok }, { type: 'cancel' }] }, (id) => resolve(id === 'ok'));
+      } catch {
+        resolve(window.confirm(`${title}\n${message}`));
+      }
+    });
+  }
+  return Promise.resolve(window.confirm(`${title}\n${message}`));
+}

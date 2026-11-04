@@ -4,6 +4,7 @@
 //   GET  /api/list        — список фото того, кто спрашивает
 //   POST /api/upload      — загрузить фото из приложения в чат пользователя с ботом
 //   GET  /api/file/:id    — скачать фото (только владельцу); токен бота наружу не попадает
+//   DELETE /api/photo/:id — удалить фото из галереи (и сообщение из чата, если Telegram разрешит)
 //   GET/POST/DELETE /api/auto/key — личный ключ автозагрузки (создать, узнать, отключить)
 //   GET  /api/auto/since  — с какой даты съёмки «Быстрой команде» искать новые фото
 //
@@ -58,6 +59,8 @@ async function route(request, env, ctx) {
   if (pathname === '/api/upload' && request.method === 'POST') return upload(request, env);
   if (pathname === '/api/auto/key') return autoKey(request, env, url);
   if (pathname === '/api/auto/since' && request.method === 'GET') return autoSince(request, env);
+  const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
+  if (del && request.method === 'DELETE') return removePhoto(request, env, Number(del[1]));
   const m = /^\/api\/file\/(\d{1,15})$/.exec(pathname);
   if (m && (request.method === 'GET' || request.method === 'HEAD')) return file(request, env, url, Number(m[1]));
   if (pathname === '/') return new Response('tg-photo-bot: ok\n', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
@@ -136,7 +139,8 @@ async function webhook(request, env) {
       'Это ваша фотогалерея в Telegram.\n\n' +
         '• Присылайте сюда фото — они сразу появятся в галерее. Чтобы сохранить без сжатия, отправляйте их файлом.\n' +
         '• Или загружайте прямо из галереи кнопкой «Загрузить».\n\n' +
-        'Фото хранятся в этом чате. Удалите сообщение здесь — и фото пропадёт из Telegram.',
+        'Фото хранятся в этом чате. Удалить фото можно корзиной в галерее.\n\n' +
+        'Как пользоваться и как настроить автозагрузку с iPhone: https://github.com/wickedslim/tg-photo-bot/blob/main/docs/user-guide.md',
       env.WEBAPP_URL ? { inline_keyboard: [[{ text: 'Открыть галерею', web_app: { url: env.WEBAPP_URL } }]] } : undefined,
     );
   }
@@ -226,7 +230,7 @@ async function upload(request, env) {
   } catch {
     throw new HttpError(400, 'bad_request', 'Не удалось прочитать файлы');
   }
-  const asDoc = form.get('mode') === 'doc';
+  let asDoc = form.get('mode') === 'doc';
   let meta = [];
   try {
     meta = JSON.parse(form.get('meta') || '[]');
@@ -235,6 +239,17 @@ async function upload(request, env) {
   // Простой вариант для «Быстрых команд»: одно фото в полях file, thumb и taken (дата съёмки текстом).
   if (form.get('taken') && !meta[0]) meta[0] = { taken: Date.parse(form.get('taken')) };
   if (form.get('la') && form.get('lo')) Object.assign((meta[0] ||= {}), { la: Number(form.get('la')), lo: Number(form.get('lo')) });
+
+  // Фото, которое Telegram не примет как сжатое (HEIC с iPhone, больше 10 МБ и т. п.), отправляем файлом —
+  // так «Быстрая команда» без шага «Конвертировать» тоже работает. Приложение такие фото готовит само.
+  if (!asDoc) {
+    for (let i = 0; i < MAX_BATCH; i++) {
+      const f = form.get('f' + i) ?? (i === 0 ? form.get('file') : null);
+      if (!f || typeof f === 'string') break;
+      const okType = /^image\/(jpeg|png|webp)$/.test(f.type) || (!f.type && /\.(jpe?g|png|webp)$/i.test(f.name || ''));
+      if (!okType || f.size > MAX_PHOTO_UPLOAD) asDoc = true;
+    }
+  }
 
   const files = [];
   const seen = new Set();
@@ -262,7 +277,7 @@ async function upload(request, env) {
     // Дата и место: что прислало приложение, иначе — из EXIF самого файла (если он его сохранил).
     const m = { ...(meta[i] || {}) };
     if (m.taken == null || m.la == null) {
-      const ex = readExif(new Uint8Array(buf, 0, Math.min(buf.byteLength, 512 * 1024)));
+      const ex = readExif(new Uint8Array(buf, 0, Math.min(buf.byteLength, 16 * 1024 * 1024)));
       m.taken ??= ex.taken;
       if (m.la == null && ex.la != null) Object.assign(m, { la: ex.la, lo: ex.lo });
     }
@@ -335,6 +350,25 @@ async function upload(request, env) {
 async function sha256(data) {
   const d = new Uint8Array(await crypto.subtle.digest('SHA-256', typeof data === 'string' ? new TextEncoder().encode(data) : data));
   return [...d].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ── Удаление ──
+// Из базы удаляем всегда. Из чата — если Telegram позволит: старые сообщения (больше 48 часов)
+// бот удалить не может, тогда говорим об этом приложению, и пользователь удалит сообщение сам.
+async function removePhoto(request, env, id) {
+  const uid = await authUser(request, env);
+  const row = await env.DB.prepare('SELECT message_id FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
+  if (!row) throw new HttpError(404, 'not_found', 'Фото не найдено');
+  let chat = 'deleted';
+  try {
+    await callApi(env.BOT_TOKEN, 'deleteMessage', { chat_id: uid, message_id: row.message_id }, { waitUpTo: 3 });
+  } catch (e) {
+    if (!(e instanceof TgError)) throw e;
+    // «message to delete not found» — в чате его уже нет, это тоже удачное удаление.
+    if (!/not found/i.test(e.message)) chat = 'kept';
+  }
+  await env.DB.prepare('DELETE FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).run();
+  return json(request, env, { ok: true, chat });
 }
 
 // ── Автозагрузка: личный ключ ──
