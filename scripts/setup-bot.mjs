@@ -1,4 +1,5 @@
 // Один раз после установки: связывает бота с сервером.
+//  - кладёт токен бота в секреты сервера (npx wrangler secret put BOT_TOKEN);
 //  - setWebhook: Telegram будет присылать новые сообщения боту на ваш сервер (с секретом);
 //  - setChatMenuButton: кнопка «Галерея» слева от поля ввода в чате с ботом;
 //  - setMyCommands: команда /start в меню.
@@ -9,6 +10,7 @@
 // Всё можно задать и переменными: BOT_TOKEN, WEBHOOK_SECRET, WORKER_URL, WEBAPP_URL.
 import { readFileSync, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { spawnSync } from 'node:child_process';
 
 const root = new URL('..', import.meta.url);
 const fromFile = (name) => (existsSync(new URL(name, root)) ? readFileSync(new URL(name, root), 'utf8').trim() : '');
@@ -62,6 +64,17 @@ async function call(method, body) {
 
 const me = await call('getMe', {});
 console.log(`Бот: @${me.username}`);
+
+// Токен — в секреты сервера. Передаём через стандартный ввод, чтобы он не попал в историю команд.
+if (!process.argv.includes('--skip-secret')) {
+  console.log('Сохраняю токен на сервере…');
+  const r = spawnSync('npx', ['wrangler', 'secret', 'put', 'BOT_TOKEN'], { input: BOT_TOKEN, stdio: ['pipe', 'inherit', 'inherit'], cwd: new URL('.', root).pathname });
+  if (r.status !== 0) {
+    console.error('Не удалось сохранить токен на сервере (см. сообщение выше).');
+    process.exit(1);
+  }
+  console.log('✓ BOT_TOKEN сохранён на сервере');
+}
 const worker = WORKER_URL.replace(/\/+$/, '');
 await call('setWebhook', {
   url: `${worker}/tg/webhook`,
