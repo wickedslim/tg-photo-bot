@@ -81,7 +81,9 @@ export function keyInfo(db, userId) {
 
 export function setKey(db, userId, keyHash, now) {
   return db
-    .prepare('INSERT INTO upload_keys (user_id, key_hash, created) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET key_hash = excluded.key_hash, created = excluded.created, cursor = NULL, used = NULL')
+    // Новый ключ взамен старого не сбрасывает, докуда дошла автозагрузка: иначе фото, снятые между последним
+    // запуском и новым ключом, никогда бы не загрузились.
+    .prepare('INSERT INTO upload_keys (user_id, key_hash, created) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET key_hash = excluded.key_hash, created = excluded.created')
     .bind(userId, keyHash, now)
     .run();
 }
@@ -175,4 +177,21 @@ export async function findDuplicate(db, userId, rec) {
     .prepare(`SELECT id FROM photos WHERE user_id = ? AND NOT (chat_id = ? AND message_id = ?) AND (${conds.join(' OR ')}) LIMIT 1`)
     .bind(...args)
     .first();
+}
+
+// Настройки автозагрузки (см. миграцию 0006). Нет строки — всё выключено.
+export async function autoSettings(db, userId) {
+  const r = await db.prepare('SELECT original, archive, last_new FROM auto_settings WHERE user_id = ?').bind(userId).first();
+  return { original: Boolean(r?.original), archive: Boolean(r?.archive), lastNew: r?.last_new ?? null };
+}
+
+export function saveAutoSettings(db, userId, { original, archive }) {
+  return db
+    .prepare('INSERT INTO auto_settings (user_id, original, archive) VALUES (?1, ?2, ?3) ON CONFLICT (user_id) DO UPDATE SET original = ?2, archive = ?3')
+    .bind(userId, original ? 1 : 0, archive ? 1 : 0)
+    .run();
+}
+
+export function touchNew(db, userId, now) {
+  return db.prepare('INSERT INTO auto_settings (user_id, last_new) VALUES (?1, ?2) ON CONFLICT (user_id) DO UPDATE SET last_new = ?2').bind(userId, now).run();
 }

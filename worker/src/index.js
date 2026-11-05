@@ -9,6 +9,8 @@
 //   GET/POST/DELETE /api/auto/key — личный ключ автозагрузки (создать, узнать, отключить)
 //   GET  /api/auto/since  — с какой даты съёмки «Быстрой команде» искать новые фото
 //   GET  /api/auto/archive — то же для команды «Архив» (старые фото, от самых старых к новым)
+//   GET  /api/auto/next   — одна готовая команда: что загружать сейчас (с какой даты, куда, как, сколько)
+//   POST /api/auto/settings — настройки автозагрузки из галереи (оригиналы, старые фото)
 //
 // Кто спрашивает, узнаём только из initData, подписанной Telegram (см. auth.js).
 // Исключение — автозагрузка с iPhone: «Быстрые команды» не умеют входить через Telegram, поэтому
@@ -18,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -70,6 +72,8 @@ async function route(request, env, ctx) {
   if (pathname === '/api/auto/key') return autoKey(request, env, url);
   if (pathname === '/api/auto/since' && request.method === 'GET') return autoSince(request, env);
   if (pathname === '/api/auto/archive' && request.method === 'GET') return archiveSince(request, env);
+  if (pathname === '/api/auto/next' && request.method === 'GET') return autoNext(request, env, url);
+  if (pathname === '/api/auto/settings' && request.method === 'POST') return autoSettingsRoute(request, env);
   const pv = /^\/api\/photo\/(\d{1,15})\/preview$/.exec(pathname);
   if (pv && request.method === 'POST') return previewRoute(request, env, Number(pv[1]));
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
@@ -607,15 +611,16 @@ async function autoKey(request, env, url) {
   if (request.method === 'GET') {
     const info = await keyInfo(env.DB, uid);
     const a = await archiveInfo(env.DB, uid);
-    const archive = a ? { cursor: a.cursor, used: a.used, count: a.count || 0, done: Boolean(info && a.cursor != null && a.cursor >= info.created) } : null;
-    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive });
+    const archive = a ? { cursor: a.cursor, used: a.used, count: a.count || 0, done: archiveDone(a, info) } : null;
+    const { original, archive: withArchive } = await autoSettings(env.DB, uid);
+    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive, settings: { original, archive: withArchive } });
   }
   if (request.method === 'POST') {
     // Новый ключ заменяет старый: старый сразу перестаёт работать. Сам ключ показываем один раз.
     const bytes = crypto.getRandomValues(new Uint8Array(24));
     const key = 'tgp_' + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_');
     await setKey(env.DB, uid, await sha256(key), Date.now());
-    return json(request, env, { key, base, uploadUrl: `${base}/api/upload`, sinceUrl: `${base}/api/auto/since`, archiveUploadUrl: `${base}/api/upload?archive=1`, archiveSinceUrl: `${base}/api/auto/archive` });
+    return json(request, env, { key, base, nextUrl: `${base}/api/auto/next`, uploadUrl: `${base}/api/upload`, sinceUrl: `${base}/api/auto/since`, archiveUploadUrl: `${base}/api/upload?archive=1`, archiveSinceUrl: `${base}/api/auto/archive` });
   }
   if (request.method === 'DELETE') {
     await deleteKey(env.DB, uid);
@@ -646,6 +651,62 @@ async function archiveSince(request, env) {
   return new Response(new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z'), {
     headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
   });
+}
+
+const archiveDone = (a, key) => Boolean(key && a?.cursor != null && a.cursor >= key.created);
+const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
+const NEW_EVERY = 3 * 3600 * 1000;
+
+// Задание для готовой команды «Фото в Telegram» (одна на всех, ссылкой iCloud). Команда спрашивает сервер,
+// что делать, и всё, что можно менять, решается здесь, а не в самой команде:
+//   since  — искать фото, снятые после этой даты (ISO 8601);
+//   limit  — сколько фото взять за запуск;
+//   upload — куда их отправлять (обычная загрузка или архив);
+//   mode   — 'photo' (сжать в JPEG до 2560 px на телефоне) или 'doc' (оригинал файлом + обложка).
+// Старые фото (если включены в галерее) идут вперемешку с новыми: раз в 3 часа запуск везёт новые
+// снимки, остальные запуски — следующую порцию архива. Когда архив дойдёт до конца, остаются только новые.
+async function autoNext(request, env, url) {
+  const row = await keyOwner(request, env);
+  const uid = row.user_id;
+  const now = Date.now();
+  const s = await autoSettings(env.DB, uid);
+  const base = url.origin;
+  let stage = 'new';
+  let since = row.cursor ? row.cursor - 1000 : row.created;
+  // Новые фото проверялись меньше 3 часов назад — этот запуск отдаём архиву.
+  if (s.archive && s.lastNew != null && now - s.lastNew < NEW_EVERY) {
+    const a = await archiveInfo(env.DB, uid);
+    if (!archiveDone(a, row)) {
+      stage = 'archive';
+      since = a?.cursor != null ? a.cursor - 1000 : Date.UTC(1900, 0, 1);
+    }
+  }
+  if (stage === 'new') await touchNew(env.DB, uid, now);
+  return json(request, env, {
+    stage,
+    since: isoSec(since),
+    limit: LIMIT,
+    upload: `${base}/api/upload${stage === 'archive' ? '?archive=1' : ''}`,
+    mode: s.original ? 'doc' : 'photo',
+  });
+}
+
+async function autoSettingsRoute(request, env) {
+  const uid = await authUser(request, env);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new HttpError(400, 'bad_request', 'Не удалось прочитать настройки');
+  }
+  const cur = await autoSettings(env.DB, uid);
+  const next = {
+    original: typeof body?.original === 'boolean' ? body.original : cur.original,
+    archive: typeof body?.archive === 'boolean' ? body.archive : cur.archive,
+  };
+  await saveAutoSettings(env.DB, uid, next);
+  return json(request, env, { ok: true, settings: next });
 }
 
 // ── Скачивание фото ──

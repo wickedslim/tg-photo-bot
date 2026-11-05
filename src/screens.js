@@ -7,7 +7,6 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&am
 const fmtBytes = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} ГБ` : `${Math.round(b / 1e6)} МБ`);
 const fmtWhen = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const GUIDE_URL = 'https://github.com/wickedslim/tg-photo-bot/blob/main/docs/shortcut.md';
-const ARCHIVE_GUIDE_URL = 'https://github.com/wickedslim/tg-photo-bot/blob/main/docs/archive.md';
 const fmtDay = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' });
 
 export function toast(text) {
@@ -152,106 +151,160 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
   storageUsage().then((u) => (q('#usage').textContent = fmtBytes(u)));
 }
 
-// ── Автозагрузка с iPhone: личный ключ для «Быстрых команд» ──
+// ── Автозагрузка с iPhone: личный ключ и готовая «Быстрая команда» ──
+// Ссылка iCloud на готовую команду «Фото в Telegram» (как её получить — docs/shortcut.md). Пока ссылки нет,
+// экран предлагает собрать команду по инструкции.
+export const SHORTCUT_LINK = '';
+
 export async function showAutoUpload({ api }) {
   const s = openSheet('Автозагрузка с iPhone', '<div class="auto-body"><div class="empty-inline"><span class="spinner small"></span></div></div>');
   const body = s.q('.auto-body');
+  let settings = { original: false, archive: false };
+  let info = null;
 
   const copyRow = (label, value) => `
     <div class="copy-row"><div class="copy-label">${esc(label)}</div>
       <div class="copy-line"><input readonly value="${esc(value)}" spellcheck="false"><button class="text-btn copy" data-v="${esc(value)}">Копировать</button></div></div>`;
 
-  const steps = `
-    <div class="group-title">Как настроить (один раз)</div>
+  // Автоматизацию ссылкой не передать (так устроены «Команды») — её человек делает сам, это 6 нажатий.
+  const automation = `
+    <div class="group-title">Запускать автоматически</div>
     <ol class="steps">
-      <li>Откройте приложение <b>«Команды»</b> → вкладка <b>«Автоматизация»</b> → <b>«+»</b>.</li>
-      <li>Выберите <b>«Приложение»</b> → <b>«Камера»</b> → отметьте <b>«Закрыто»</b> → <b>«Запускать сразу»</b>.</li>
-      <li>Соберите команду из пяти шагов по <a href="#" id="guide">подробной инструкции</a> — туда нужно вставить адреса и ключ отсюда.</li>
-      <li>Сделайте вторую автоматизацию <b>«Время суток»</b> → 23:00 с той же командой — на случай, если первая не сработала.</li>
+      <li>Откройте «Команды» → вкладка <b>«Автоматизация»</b> → <b>«+»</b>.</li>
+      <li><b>«Приложение»</b> → выберите <b>«Камера»</b> → отметьте <b>«Закрыто»</b> (снимите «Открыто») → <b>«Запускать сразу»</b> → <b>«Далее»</b> → команда <b>«Фото в Telegram»</b>.</li>
+      <li>Ещё одну: <b>«Зарядное устройство»</b> → <b>«Подключено»</b> → <b>«Запускать сразу»</b> → та же команда.</li>
     </ol>
-    <div class="group-foot">Запуск по расписанию iOS иногда пропускает, особенно когда телефон заблокирован. Ничего не потеряется: следующий запуск догрузит всё, что не дошло. За раз уходит до 30 фото.</div>`;
+    <div class="group-foot">Первая отправляет снимки, как только вы выходите из камеры, вторая догружает остальное, когда вы ставите телефон на зарядку. В первый раз iPhone спросит доступ к фото и к серверу — ответьте <b>«Разрешать всегда»</b>.</div>`;
 
-  // Старые фото: отдельная команда «Архив» идёт от самых старых снимков к новым, до момента создания ключа.
-  const archiveBlock = (a, base) => {
-    let rows;
-    if (!a) rows = '<div class="row"><span>Архив</span><span class="muted">ещё не запускался</span></div>';
-    else
-      rows = `
-        <div class="row"><span>Загружено архивом</span><span class="muted">${a.count.toLocaleString('ru')} фото</span></div>
-        <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? fmtDay.format(a.cursor).replace(/ г\.$/, '') : '—'}</span></div>
-        <div class="row"><span>Последний запуск</span><span class="muted">${a.used ? fmtWhen.format(a.used) : '—'}</span></div>`;
+  const statusRows = (k) => `
+    <div class="group">
+      <div class="row"><span>Последний запуск</span><span class="muted">${k.used ? fmtWhen.format(k.used) : 'ещё не было'}</span></div>
+      <div class="row"><span>Последнее фото снято</span><span class="muted">${k.cursor ? fmtWhen.format(k.cursor) : '—'}</span></div>
+    </div>`;
+
+  const archiveRows = (a) => {
+    if (!a) return '<div class="row"><span>Старые фото</span><span class="muted">ещё не начали</span></div>';
     return `
-      <div class="group-title">Старые фото: команда «Архив»</div>
-      <div class="group-foot">Загружает всю галерею iPhone по порядку, от самых старых снимков. Сделайте копию команды автозагрузки и замените в ней два адреса — <a href="#" id="archive-guide">как это сделать</a>. Запускайте вручную, пока здесь не появится «Готово». Повторов не будет.</div>
-      <div class="group">${rows}</div>
-      ${copyRow('Адрес загрузки архива', base + '/api/upload?archive=1')}
-      ${copyRow('Адрес «с какой даты» для архива', base + '/api/auto/archive')}`;
+      <div class="row"><span>Загружено старых</span><span class="muted">${(a.count || 0).toLocaleString('ru')} фото</span></div>
+      <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? fmtDay.format(a.cursor).replace(/ г\.$/, '') : '—'}</span></div>`;
   };
 
-  const renderKey = (k) => {
-    body.innerHTML = `
-      <div class="notice">Ключ показывается один раз. Сохраните его в команду сейчас. Потеряли — создайте новый, старый перестанет работать.</div>
-      ${copyRow('Ключ', 'Key ' + k.key)}
-      ${copyRow('Адрес загрузки', k.uploadUrl)}
-      ${copyRow('Адрес «с какой даты»', k.sinceUrl)}
-      ${steps}
-      ${archiveBlock(null, k.base)}
-      <div class="group"><button class="row link danger" id="off">Отключить автозагрузку</button></div>`;
+  // Настройки хранятся на сервере, команда спрашивает их перед каждым запуском — менять её не нужно.
+  const settingsBlock = () => `<div class="auto-settings">${settingsHtml()}</div>`;
+  const settingsHtml = () => `
+    <div class="group-title">Настройки</div>
+    <div class="group">
+      <label class="row switch-row"><span>Оригиналы без сжатия</span><input type="checkbox" class="switch" data-k="original" ${settings.original ? 'checked' : ''}></label>
+      <label class="row switch-row"><span>Загрузить и старые фото</span><input type="checkbox" class="switch" data-k="archive" ${settings.archive ? 'checked' : ''}></label>
+      ${settings.archive ? archiveRows(info?.archive) : ''}
+    </div>
+    <div class="group-foot">${
+      settings.original
+        ? 'Фото уходят файлом в исходном качестве (HEIC, как снял iPhone): дольше загружаются, зато ничего не теряется.'
+        : 'Фото сжимаются на телефоне до 2560 px, как обычные фото в Telegram: так загрузка быстрее.'
+    } ${
+      settings.archive
+        ? 'Старые фото идут по порядку, от самых старых, по 100 за запуск, вперемешку с новыми. Чтобы быстрее — поставьте телефон на зарядку и запустите команду вручную несколько раз. Повторов не будет.'
+        : 'Без старых фото загружаются только снимки, сделанные после подключения.'
+    }</div>`;
+
+  const wireSwitches = () =>
+    body.querySelectorAll('.switch').forEach((sw) =>
+      sw.addEventListener('change', async () => {
+        const prev = settings;
+        settings = { ...settings, [sw.dataset.k]: sw.checked };
+        try {
+          settings = (await api.saveAutoSettings(settings)).settings || settings;
+          haptic('light');
+        } catch (err) {
+          settings = prev;
+          toast(err.message);
+        }
+        // Перерисовываем только настройки: подписи и прогресс старых фото зависят от переключателей.
+        body.querySelector('.auto-settings').innerHTML = settingsHtml();
+        wireSwitches();
+      }),
+    );
+
+  // Ключ показывается один раз: сразу после создания предлагаем добавить с ним команду.
+  const renderConnect = (k) => {
+    const key = 'Key ' + k.key;
+    body.innerHTML = SHORTCUT_LINK
+      ? `
+        <div class="group-title">1. Добавьте команду</div>
+        <button class="big-btn" id="add" data-v="${esc(key)}">Добавить команду</button>
+        <div class="setup-hint">Ключ скопируется сам. Когда iPhone спросит ключ, нажмите на поле → <b>«Вставить»</b> → <b>«Добавить команду»</b>.</div>
+        ${copyRow('Ключ (если не вставился)', key)}
+        ${automation.replace('Запускать автоматически', '2. Запускать автоматически')}
+        ${settingsBlock()}
+        <div class="group"><button class="row link danger" id="off">Отключить автозагрузку</button></div>`
+      : `
+        <div class="notice">Ключ показывается один раз. Сохраните его в команду сейчас. Потеряли — подключите заново, старый ключ перестанет работать.</div>
+        ${copyRow('Ключ', key)}
+        ${copyRow('Адрес задания', k.nextUrl)}
+        <div class="group-foot">Соберите команду «Фото в Telegram» по <a href="#" id="guide">инструкции</a> и вставьте туда ключ и адрес.</div>
+        ${automation}
+        ${settingsBlock()}
+        <div class="group"><button class="row link danger" id="off">Отключить автозагрузку</button></div>`;
     wire();
   };
 
-  const renderInfo = (info) => {
-    if (!info.exists) {
+  const renderInfo = (k) => {
+    info = k;
+    settings = k.settings || settings;
+    if (!k.exists) {
       body.innerHTML = `
-        <div class="group-foot first">Приложение не может само заглянуть в галерею телефона — так устроены iPhone. Зато это умеют встроенные «Быстрые команды»: после съёмки и каждый вечер они отправят новые фото сюда, без ваших нажатий.</div>
-        <button class="big-btn" id="create">Включить автозагрузку</button>
-        <div class="setup-hint">Вы получите личный ключ. По нему можно только загружать фото в ваш чат — смотреть фото по нему нельзя.</div>
-        ${steps}`;
+        <div class="group-foot first">Приложение не может само заглянуть в галерею телефона — так устроены iPhone. Зато это умеют встроенные «Быстрые команды»: после съёмки и на зарядке они сами отправят новые фото сюда.</div>
+        <button class="big-btn" id="create">Подключить автозагрузку</button>
+        <div class="setup-hint">Займёт пару минут: добавить готовую команду и сделать две автоматизации. Вы получите личный ключ — по нему можно только загружать фото в ваш чат, смотреть их нельзя.</div>`;
     } else {
       body.innerHTML = `
+        ${statusRows(k)}
+        ${settingsBlock()}
+        ${automation}
         <div class="group">
-          <div class="row"><span>Ключ создан</span><span class="muted">${fmtWhen.format(info.created)}</span></div>
-          <div class="row"><span>Последний запуск</span><span class="muted">${info.used ? fmtWhen.format(info.used) : 'ещё не было'}</span></div>
-          <div class="row"><span>Последнее фото снято</span><span class="muted">${info.cursor ? fmtWhen.format(info.cursor) : '—'}</span></div>
-        </div>
-        ${copyRow('Адрес загрузки', info.base + '/api/upload')}
-        ${copyRow('Адрес «с какой даты»', info.base + '/api/auto/since')}
-        ${steps}
-        ${archiveBlock(info.archive, info.base)}
-        <div class="group">
-          <button class="row link" id="create">Создать новый ключ</button>
+          <button class="row link" id="create">Подключить заново (новый ключ)</button>
           <button class="row link danger" id="off">Отключить автозагрузку</button>
-        </div>`;
+        </div>
+        <div class="group-foot">Подключить заново — если команда пропала или вы поменяли iPhone. Старый ключ перестанет работать, загрузка продолжится с того же места.</div>`;
     }
     wire();
+  };
+
+  const copy = async (text, input) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      if (!input) return false;
+      input.select();
+      return Boolean(document.execCommand?.('copy'));
+    }
   };
 
   const wire = () => {
     body.querySelectorAll('.copy').forEach((b) =>
       b.addEventListener('click', async () => {
-        const input = b.previousElementSibling;
-        try {
-          await navigator.clipboard.writeText(b.dataset.v);
-        } catch {
-          input.select();
-          document.execCommand?.('copy');
-        }
+        await copy(b.dataset.v, b.previousElementSibling);
         haptic('light');
         toast('Скопировано');
       }),
     );
+    body.querySelector('#add')?.addEventListener('click', (e) => {
+      // Сначала копируем (пока нажатие «свежее» — иначе iPhone не даст писать в буфер), потом открываем ссылку.
+      copy(e.currentTarget.dataset.v, body.querySelector('.copy-line input'));
+      haptic('medium');
+      setTimeout(() => openExternal(SHORTCUT_LINK), 150);
+    });
     body.querySelector('#guide')?.addEventListener('click', (e) => {
       e.preventDefault();
       openExternal(GUIDE_URL);
     });
-    body.querySelector('#archive-guide')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      openExternal(ARCHIVE_GUIDE_URL);
-    });
+    wireSwitches();
     body.querySelector('#create')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
       try {
-        renderKey(await api.createAutoKey());
+        renderConnect(await api.createAutoKey());
         haptic('medium');
       } catch (err) {
         toast(err.message);
@@ -262,7 +315,7 @@ export async function showAutoUpload({ api }) {
       try {
         await api.deleteAutoKey();
         toast('Автозагрузка отключена');
-        renderInfo({ exists: false });
+        renderInfo({ exists: false, settings });
       } catch (err) {
         toast(err.message);
       }

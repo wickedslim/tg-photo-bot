@@ -163,6 +163,10 @@ export class Api {
   deleteAutoKey() {
     return this.req('/api/auto/key', { method: 'DELETE' });
   }
+  // Настройки автозагрузки: { original, archive } — команда на iPhone узнаёт их у сервера сама.
+  saveAutoSettings(settings) {
+    return this.req('/api/auto/settings', { method: 'POST', body: JSON.stringify(settings) });
+  }
 }
 
 export function sleep(ms, signal) {

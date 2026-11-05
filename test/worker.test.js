@@ -296,6 +296,67 @@ test('архив: от старых фото к новым, без повтор�
   assert.equal((await (await api('/api/auto/key', { user: U })).json()).archive.done, true);
 });
 
+test('готовая команда: задание от сервера, настройки из галереи, архив вперемешку с новыми', async () => {
+  const U = 6161;
+  const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  assert.match(created.nextUrl, /\/api\/auto\/next$/);
+  const auth = { authorization: 'Key ' + created.key };
+  const next = async () => (await api('/api/auto/next', { headers: auth })).json();
+  const settings = (body) => api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify(body) });
+
+  // по умолчанию: новые фото, сжатые, с момента создания ключа
+  let t = await next();
+  assert.deepEqual({ stage: t.stage, limit: t.limit, mode: t.mode }, { stage: 'new', limit: 100, mode: 'photo' });
+  assert.match(t.upload, /\/api\/upload$/);
+  assert.match(t.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  // без ключа и чужим нельзя
+  assert.equal((await api('/api/auto/next')).status, 401);
+  assert.equal((await api('/api/auto/settings', { method: 'POST', body: '{}' })).status, 401);
+
+  // включили оригиналы и старые фото
+  assert.equal((await settings({ original: true, archive: true })).status, 200);
+  let info = await (await api('/api/auto/key', { user: U })).json();
+  assert.deepEqual(info.settings, { original: true, archive: true });
+  // новые фото проверялись только что — этот запуск везёт архив, с самого начала
+  t = await next();
+  assert.deepEqual({ stage: t.stage, limit: t.limit, mode: t.mode, since: t.since }, { stage: 'archive', limit: 100, mode: 'doc', since: '1900-01-01T00:00:00Z' });
+  assert.match(t.upload, /\/api\/upload\?archive=1$/);
+  // команда загружает по заданию — архив двигается
+  const form = new FormData();
+  form.set('mode', t.mode);
+  form.set('file', new File(['heic-old'], 'IMG_1.HEIC', { type: 'image/heic' }));
+  form.set('taken', '2012-05-05T10:00:00Z');
+  assert.equal((await api(new URL(t.upload).pathname + new URL(t.upload).search, { headers: auth, method: 'POST', body: form })).status, 200);
+  assert.equal((await next()).since, '2012-05-05T09:59:59Z');
+
+  // через 3 часа — снова очередь новых фото
+  const db = await mf.getD1Database('DB');
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+  assert.equal((await next()).stage, 'archive');
+
+  // архив дошёл до конца — остаются только новые
+  const last = new FormData();
+  last.set('file', jpeg('after-key'));
+  last.set('taken', new Date(Date.now() + 60000).toISOString());
+  assert.equal((await (await api('/api/upload?archive=1', { headers: auth, method: 'POST', body: last })).json()).done, true);
+  assert.equal((await next()).stage, 'new');
+
+  // выключили старые фото, оригиналы оставили
+  await settings({ archive: false });
+  info = await (await api('/api/auto/key', { user: U })).json();
+  assert.deepEqual(info.settings, { original: true, archive: false });
+
+  // новый ключ не сбрасывает, докуда дошла автозагрузка
+  const up = new FormData();
+  up.set('file', jpeg('new-one'));
+  up.set('taken', '2026-10-01T08:00:00Z');
+  await api('/api/upload', { headers: auth, method: 'POST', body: up });
+  const again = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  const t2 = await (await api('/api/auto/next', { headers: { authorization: 'Key ' + again.key } })).json();
+  assert.equal(t2.since, '2026-10-01T07:59:59Z');
+});
+
 test('дата и место съёмки: из файла, присланного боту, и из загрузки без данных приложения', async () => {
   const C = 333;
   await hook({
