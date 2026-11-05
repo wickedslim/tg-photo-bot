@@ -7,6 +7,7 @@
 //   DELETE /api/photo/:id — удалить фото из галереи (и сообщение из чата, если Telegram разрешит)
 //   GET/POST/DELETE /api/auto/key — личный ключ автозагрузки (создать, узнать, отключить)
 //   GET  /api/auto/since  — с какой даты съёмки «Быстрой команде» искать новые фото
+//   GET  /api/auto/archive — то же для команды «Архив» (старые фото, от самых старых к новым)
 //
 // Кто спрашивает, узнаём только из initData, подписанной Telegram (см. auth.js).
 // Исключение — автозагрузка с iPhone: «Быстрые команды» не умеют входить через Telegram, поэтому
@@ -15,7 +16,7 @@
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -56,9 +57,10 @@ async function route(request, env, ctx) {
   if (request.method === 'OPTIONS') return preflight(request, env);
   if (pathname === '/tg/webhook' && request.method === 'POST') return webhook(request, env);
   if (pathname === '/api/list' && request.method === 'GET') return list(request, env, url);
-  if (pathname === '/api/upload' && request.method === 'POST') return upload(request, env);
+  if (pathname === '/api/upload' && request.method === 'POST') return upload(request, env, url);
   if (pathname === '/api/auto/key') return autoKey(request, env, url);
   if (pathname === '/api/auto/since' && request.method === 'GET') return autoSince(request, env);
+  if (pathname === '/api/auto/archive' && request.method === 'GET') return archiveSince(request, env);
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
   if (del && request.method === 'DELETE') return removePhoto(request, env, Number(del[1]));
   const m = /^\/api\/file\/(\d{1,15})$/.exec(pathname);
@@ -217,11 +219,15 @@ async function uploader(request, env) {
   const h = request.headers.get('authorization') || '';
   if (!h.startsWith('Key ')) return { uid: await authUser(request, env), source: 'app' };
   const row = await keyOwner(request, env);
-  return { uid: row.user_id, source: 'auto' };
+  return { uid: row.user_id, source: 'auto', key: row };
 }
 
-async function upload(request, env) {
-  const { uid, source } = await uploader(request, env);
+async function upload(request, env, url) {
+  const who = await uploader(request, env);
+  const { uid } = who;
+  const archive = url.searchParams.get('archive') === '1';
+  if (archive && who.source !== 'auto') throw new HttpError(400, 'bad_request', 'Архив загружается только командой «Архив» с ключом');
+  const source = archive ? 'archive' : who.source;
   const len = Number(request.headers.get('content-length') || 0);
   if (len > MAX_BODY) throw new HttpError(413, 'too_big', 'Слишком большой запрос — загружайте меньше фото за раз');
   let form;
@@ -239,6 +245,27 @@ async function upload(request, env) {
   // Простой вариант для «Быстрых команд»: одно фото в полях file, thumb и taken (дата съёмки текстом).
   if (form.get('taken') && !meta[0]) meta[0] = { taken: Date.parse(form.get('taken')) };
   if (form.get('la') && form.get('lo')) Object.assign((meta[0] ||= {}), { la: Number(form.get('la')), lo: Number(form.get('lo')) });
+  const now = Date.now();
+
+  // Архив идёт от старых фото к новым и останавливается на фото, снятых после создания ключа, —
+  // дальше их везёт обычная автозагрузка. Докуда дошли, запоминаем даже для пропущенных фото,
+  // иначе команда будет снова и снова находить одни и те же.
+  let archiveAt = null;
+  if (archive) {
+    archiveAt = Date.parse(form.get('taken') || '');
+    if (!Number.isFinite(archiveAt)) throw new HttpError(400, 'no_date', 'Нет даты съёмки — проверьте в команде поле taken');
+    if (archiveAt >= who.key.created) {
+      await touchArchive(env.DB, uid, now, who.key.created);
+      return json(request, env, { ok: true, items: [], skipped: 1, done: true });
+    }
+    const prev = await archiveInfo(env.DB, uid);
+    // Уже есть фото, снятое в ту же секунду: загружено кнопкой или автозагрузкой — или это последнее
+    // фото прошлого запуска (команда начинает на секунду раньше, чтобы не пропустить соседние кадры).
+    if (await hasTakenAt(env.DB, uid, archiveAt, prev?.cursor != null && archiveAt <= prev.cursor)) {
+      await touchArchive(env.DB, uid, now, archiveAt);
+      return json(request, env, { ok: true, items: [], skipped: 1 });
+    }
+  }
 
   // Фото, которое Telegram не примет как сжатое (HEIC с iPhone, больше 10 МБ и т. п.), отправляем файлом —
   // так «Быстрая команда» без шага «Конвертировать» тоже работает. Приложение такие фото готовит само.
@@ -284,10 +311,10 @@ async function upload(request, env) {
     files.push({ f, name, thumb, hash, meta: m });
   }
   if (!files.length && !skipped) throw new HttpError(400, 'bad_request', 'Нет файлов');
-  const now = Date.now();
   const takenOf = (m) => num(m.taken, Date.UTC(1990, 0, 1), now + 86400000);
   if (!files.length) {
-    if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
+    if (archive) await touchArchive(env.DB, uid, now, archiveAt);
+    else if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
     return json(request, env, { ok: true, items: [], skipped });
   }
 
@@ -343,7 +370,8 @@ async function upload(request, env) {
     recs.push(rec);
   });
   const rows = await savePhotos(env.DB, uid, recs);
-  if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...recs.map((r) => r.taken || 0)));
+  if (archive) await touchArchive(env.DB, uid, now, archiveAt);
+  else if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...recs.map((r) => r.taken || 0)));
   return json(request, env, { ok: true, items: rows.map(toItem), skipped });
 }
 
@@ -389,14 +417,16 @@ async function autoKey(request, env, url) {
   const base = url.origin;
   if (request.method === 'GET') {
     const info = await keyInfo(env.DB, uid);
-    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base });
+    const a = await archiveInfo(env.DB, uid);
+    const archive = a ? { cursor: a.cursor, used: a.used, count: a.count || 0, done: Boolean(info && a.cursor != null && a.cursor >= info.created) } : null;
+    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive });
   }
   if (request.method === 'POST') {
     // Новый ключ заменяет старый: старый сразу перестаёт работать. Сам ключ показываем один раз.
     const bytes = crypto.getRandomValues(new Uint8Array(24));
     const key = 'tgp_' + btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_');
     await setKey(env.DB, uid, await sha256(key), Date.now());
-    return json(request, env, { key, base, uploadUrl: `${base}/api/upload`, sinceUrl: `${base}/api/auto/since` });
+    return json(request, env, { key, base, uploadUrl: `${base}/api/upload`, sinceUrl: `${base}/api/auto/since`, archiveUploadUrl: `${base}/api/upload?archive=1`, archiveSinceUrl: `${base}/api/auto/archive` });
   }
   if (request.method === 'DELETE') {
     await deleteKey(env.DB, uid);
@@ -411,6 +441,19 @@ async function autoKey(request, env, url) {
 async function autoSince(request, env) {
   const row = await keyOwner(request, env);
   const ms = row.cursor ? row.cursor - 1000 : row.created;
+  return new Response(new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z'), {
+    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+  });
+}
+
+// «С какой даты» для команды «Архив». Пока ничего не загружено — с 1900 года, то есть со всех фото.
+// Когда архив дошёл до фото, снятых после создания ключа, отвечаем датой из далёкого будущего:
+// команда ничего не найдёт и сразу закончит.
+async function archiveSince(request, env) {
+  const row = await keyOwner(request, env);
+  const p = await archiveInfo(env.DB, row.user_id);
+  let ms = Date.UTC(1900, 0, 1);
+  if (p?.cursor != null) ms = p.cursor >= row.created ? Date.UTC(2100, 0, 1) : p.cursor - 1000;
   return new Response(new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z'), {
     headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
   });

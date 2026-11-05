@@ -7,6 +7,8 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&am
 const fmtBytes = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} ГБ` : `${Math.round(b / 1e6)} МБ`);
 const fmtWhen = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 const GUIDE_URL = 'https://github.com/wickedslim/tg-photo-bot/blob/main/docs/shortcut.md';
+const ARCHIVE_GUIDE_URL = 'https://github.com/wickedslim/tg-photo-bot/blob/main/docs/archive.md';
+const fmtDay = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' });
 
 export function toast(text) {
   const t = document.createElement('div');
@@ -169,6 +171,23 @@ export async function showAutoUpload({ api }) {
     </ol>
     <div class="group-foot">Запуск по расписанию iOS иногда пропускает, особенно когда телефон заблокирован. Ничего не потеряется: следующий запуск догрузит всё, что не дошло. За раз уходит до 30 фото.</div>`;
 
+  // Старые фото: отдельная команда «Архив» идёт от самых старых снимков к новым, до момента создания ключа.
+  const archiveBlock = (a, base) => {
+    let rows;
+    if (!a) rows = '<div class="row"><span>Архив</span><span class="muted">ещё не запускался</span></div>';
+    else
+      rows = `
+        <div class="row"><span>Загружено архивом</span><span class="muted">${a.count.toLocaleString('ru')} фото</span></div>
+        <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? fmtDay.format(a.cursor).replace(/ г\.$/, '') : '—'}</span></div>
+        <div class="row"><span>Последний запуск</span><span class="muted">${a.used ? fmtWhen.format(a.used) : '—'}</span></div>`;
+    return `
+      <div class="group-title">Старые фото: команда «Архив»</div>
+      <div class="group-foot">Загружает всю галерею iPhone по порядку, от самых старых снимков. Сделайте копию команды автозагрузки и замените в ней два адреса — <a href="#" id="archive-guide">как это сделать</a>. Запускайте вручную, пока здесь не появится «Готово». Повторов не будет.</div>
+      <div class="group">${rows}</div>
+      ${copyRow('Адрес загрузки архива', base + '/api/upload?archive=1')}
+      ${copyRow('Адрес «с какой даты» для архива', base + '/api/auto/archive')}`;
+  };
+
   const renderKey = (k) => {
     body.innerHTML = `
       <div class="notice">Ключ показывается один раз. Сохраните его в команду сейчас. Потеряли — создайте новый, старый перестанет работать.</div>
@@ -176,6 +195,7 @@ export async function showAutoUpload({ api }) {
       ${copyRow('Адрес загрузки', k.uploadUrl)}
       ${copyRow('Адрес «с какой даты»', k.sinceUrl)}
       ${steps}
+      ${archiveBlock(null, k.base)}
       <div class="group"><button class="row link danger" id="off">Отключить автозагрузку</button></div>`;
     wire();
   };
@@ -197,6 +217,7 @@ export async function showAutoUpload({ api }) {
         ${copyRow('Адрес загрузки', info.base + '/api/upload')}
         ${copyRow('Адрес «с какой даты»', info.base + '/api/auto/since')}
         ${steps}
+        ${archiveBlock(info.archive, info.base)}
         <div class="group">
           <button class="row link" id="create">Создать новый ключ</button>
           <button class="row link danger" id="off">Отключить автозагрузку</button>
@@ -222,6 +243,10 @@ export async function showAutoUpload({ api }) {
     body.querySelector('#guide')?.addEventListener('click', (e) => {
       e.preventDefault();
       openExternal(GUIDE_URL);
+    });
+    body.querySelector('#archive-guide')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      openExternal(ARCHIVE_GUIDE_URL);
     });
     body.querySelector('#create')?.addEventListener('click', async (e) => {
       e.target.disabled = true;

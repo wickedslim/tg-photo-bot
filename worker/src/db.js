@@ -92,3 +92,23 @@ export function touchKey(db, userId, now, cursor) {
     .bind(now, cursor ?? null, userId)
     .run();
 }
+
+// ── Архив (старые фото командой «Архив») ──
+export function archiveInfo(db, userId) {
+  return db.prepare('SELECT cursor, used, (SELECT COUNT(*) FROM photos WHERE user_id = ?1 AND source = ?2) AS count FROM archive_progress WHERE user_id = ?1').bind(userId, 'archive').first();
+}
+
+export function touchArchive(db, userId, now, cursor) {
+  return db
+    .prepare('INSERT INTO archive_progress (user_id, cursor, used) VALUES (?1, ?3, ?2) ON CONFLICT (user_id) DO UPDATE SET used = ?2, cursor = MAX(COALESCE(cursor, ?3), ?3)')
+    .bind(userId, now, cursor)
+    .run();
+}
+
+// Есть ли уже фото, снятое в ту же секунду. Без withArchive смотрим только загруженные НЕ архивом
+// (кнопкой, автозагрузкой, в чат): серийную съёмку (несколько кадров в секунду) из самого архива это не задевает.
+export async function hasTakenAt(db, userId, taken, withArchive = false) {
+  const s = Math.floor(taken / 1000) * 1000;
+  const sql = 'SELECT 1 FROM photos WHERE user_id = ? AND taken >= ? AND taken < ?' + (withArchive ? '' : " AND source <> 'archive'");
+  return Boolean(await db.prepare(sql).bind(userId, s, s + 1000).first());
+}

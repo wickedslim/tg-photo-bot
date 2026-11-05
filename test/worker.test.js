@@ -236,6 +236,59 @@ test('ключ автозагрузки: загружает только в св
   assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key tgp_' + 'x'.repeat(32) } })).status, 401);
 });
 
+test('архив: от старых фото к новым, без повторов, до момента создания ключа', async () => {
+  const U = 444;
+  const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  const auth = { authorization: 'Key ' + created.key };
+  const since = async () => (await api('/api/auto/archive', { headers: auth })).text();
+  const send = (body, taken, url = '/api/upload?archive=1') => {
+    const form = new FormData();
+    form.set('mode', 'photo');
+    form.set('file', jpeg(body));
+    if (taken) form.set('taken', taken);
+    return api(url, { headers: auth, method: 'POST', body: form });
+  };
+
+  // сначала — со всех фото
+  assert.equal(await since(), '1900-01-01T00:00:00Z');
+  // архив — только по ключу, не из приложения
+  const fromApp = new FormData();
+  fromApp.set('file', jpeg('a'));
+  assert.equal((await api('/api/upload?archive=1', { user: U, method: 'POST', body: fromApp })).status, 400);
+  // без даты съёмки архив не знает, докуда дошёл
+  assert.equal((await send('nodate')).status, 400);
+
+  // это фото уже загружено кнопкой «Загрузить» (снято в ту же секунду) — архив его пропустит
+  const manual = new FormData();
+  manual.set('f0', jpeg('manual'));
+  manual.set('meta', JSON.stringify([{ taken: Date.parse('2015-06-01T12:00:00Z') }]));
+  assert.equal((await api('/api/upload', { user: U, method: 'POST', body: manual })).status, 200);
+
+  sent.length = 0;
+  let r = await (await send('old1', '2014-03-01T10:00:00+03:00')).json();
+  assert.equal(r.items[0].t, Date.parse('2014-03-01T07:00:00Z'));
+  assert.equal(r.items[0].o, 'archive');
+  assert.equal(await since(), '2014-03-01T06:59:59Z');
+  // то же фото ещё раз (последнее фото прошлого запуска) — не задвоится, даже если байты другие
+  assert.equal((await (await send('old1-again', '2014-03-01T10:00:00+03:00')).json()).skipped, 1);
+  // уже загруженное другим путём
+  assert.equal((await (await send('manual-copy', '2015-06-01T15:00:00+03:00')).json()).skipped, 1);
+  assert.equal(await since(), '2015-06-01T11:59:59Z');
+  assert.equal(sent.length, 1);
+
+  // обычная автозагрузка своей датой не сдвигается
+  const info = await (await api('/api/auto/key', { user: U })).json();
+  assert.equal(info.cursor, null);
+  assert.deepEqual({ count: info.archive.count, done: info.archive.done }, { count: 1, done: false });
+
+  // дошли до фото, снятых после создания ключа, — их везёт автозагрузка, архив закончен
+  const done = await (await send('new', new Date(Date.now() + 60000).toISOString())).json();
+  assert.equal(done.done, true);
+  assert.equal(sent.length, 1);
+  assert.equal(await since(), '2100-01-01T00:00:00Z');
+  assert.equal((await (await api('/api/auto/key', { user: U })).json()).archive.done, true);
+});
+
 test('дата и место съёмки: из файла, присланного боту, и из загрузки без данных приложения', async () => {
   const C = 333;
   await hook({

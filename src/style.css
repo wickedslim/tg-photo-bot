@@ -331,6 +331,7 @@ input { font: inherit; color: inherit; }
 /* Автозагрузка */
 .auto-body { padding-bottom: 8px; }
 .copy-row { margin-top: 14px; }
+.copy-row + .group { margin-top: 22px; }
 .copy-label { font-size: 13px; color: var(--muted); text-transform: uppercase; padding: 0 16px 6px; }
 .copy-line { display: flex; align-items: center; gap: 8px; background: var(--cell); border-radius: 12px; padding: 8px 8px 8px 14px; }
 .copy-line input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: 14px ui-monospace, Menlo, monospace; color: var(--text); text-overflow: ellipsis; }

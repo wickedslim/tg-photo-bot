@@ -110,7 +110,7 @@ export class MockDisk {
   }
 
   async autoKeyInfo() {
-    return { exists: Boolean(this.key), created: this.key?.created, used: null, cursor: null, base: 'https://tg-photo-bot.example.workers.dev' };
+    return { exists: Boolean(this.key), created: this.key?.created, used: null, cursor: null, base: 'https://tg-photo-bot.example.workers.dev', archive: this.key ? { count: 3200, cursor: Date.UTC(2019, 2, 14), used: Date.now() - 600000, done: false } : null };
   }
   async createAutoKey() {
     const base = 'https://tg-photo-bot.example.workers.dev';
