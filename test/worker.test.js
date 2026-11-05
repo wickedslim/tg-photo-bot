@@ -309,6 +309,7 @@ test('готовая команда: задание от сервера, нас�
   assert.deepEqual({ stage: t.stage, limit: t.limit, mode: t.mode }, { stage: 'new', limit: 100, mode: 'photo' });
   assert.match(t.upload, /\/api\/upload$/);
   assert.match(t.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.ok(t.ago >= 5 && t.ago < 30, String(t.ago)); // ключ создан только что
   // без ключа и чужим нельзя
   assert.equal((await api('/api/auto/next')).status, 401);
   assert.equal((await api('/api/auto/settings', { method: 'POST', body: '{}' })).status, 401);
