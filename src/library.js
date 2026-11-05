@@ -129,7 +129,9 @@ export class Library {
         <div class="topbar-actions">
           <span class="spinner small" hidden></span>
           <button class="pill" data-act="select">Выбрать</button>
-          <button class="pill" data-act="upload">Загрузить</button>
+          <button class="pill icon" data-act="upload" aria-label="Загрузить">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+          </button>
           <button class="pill icon" data-act="settings" aria-label="Настройки">
             <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
           </button>
@@ -161,8 +163,9 @@ export class Library {
       onScrollInfo: (item, cols) => {
         if (this.view !== 'all' || !item) return;
         const d = new Date(item.t);
-        this.title.textContent = cols <= 3 ? dayLabel(d) : `${monthLabel(d.getFullYear(), d.getMonth())} ${d.getFullYear()}`;
-        this.sub.textContent = '';
+        // Как в «Фото» на iPhone: крупно — день и месяц (или месяц), год — строкой ниже.
+        this.title.textContent = cols <= 3 ? dayLabel(d).replace(/\s\d{4}$/, '') : monthLabel(d.getFullYear(), d.getMonth());
+        this.sub.textContent = String(d.getFullYear());
       },
     });
     this.months = new Cards(this.views.months, {
@@ -235,7 +238,7 @@ export class Library {
     this.items = items;
     this.emptyEl.hidden = items.length > 0;
     if (!items.length) {
-      this.emptyEl.innerHTML = '<div class="empty-title">Здесь пока пусто</div><div>Нажмите «Загрузить» или пришлите фото боту в чат — они появятся здесь.</div>';
+      this.emptyEl.innerHTML = '<div class="empty-title">Здесь пока пусто</div><div>Нажмите «+» вверху или пришлите фото боту в чат — они появятся здесь.</div>';
       this.title.textContent = 'Медиатека';
     }
     this.grid.setItems(items);

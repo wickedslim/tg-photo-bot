@@ -98,7 +98,7 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
     <div class="group">
       <button class="row link" id="auto">Автозагрузка с iPhone</button>
     </div>
-    <div class="group-foot">«Быстрые команды» сами отправляют новые фото в галерею — после съёмки и каждый вечер.</div>
+    <div class="group-foot">«Быстрые команды» сами отправляют новые фото в галерею — после съёмки и на зарядке.</div>
     <div class="group">
       <button class="row link" id="reindex">Обновить список фото</button>
       <button class="row link" id="clear">Очистить кэш миниатюр <span class="muted" id="usage"></span></button>
@@ -111,8 +111,8 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
     <div class="group-foot">Лица и содержимое фото анализируются только на этом устройстве. Имена людей тоже хранятся здесь.</div>
     <div class="group-title">Где хранятся фото</div>
     <div class="group about">
-      <div class="row">Все фото лежат в вашем личном чате с ботом. Удалите сообщение в чате — фото пропадёт и из Telegram.</div>
-      <div class="row">Другие пользователи бота ваши фото не видят. Но владелец бота технически может получить к ним доступ — не загружайте то, что хотите скрыть ото всех.</div>
+      <div class="row">Все фото лежат в вашем личном чате с ботом. Удаляйте их корзиной в галерее — так фото пропадёт и из галереи, и из чата.</div>
+      <div class="row">Другие пользователи бота ваши фото не видят.</div>
     </div>
     <div class="group">
       <button class="row link danger" id="wipe">Стереть данные галереи на этом устройстве</button>

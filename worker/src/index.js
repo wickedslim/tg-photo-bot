@@ -158,7 +158,7 @@ async function webhook(request, env) {
       uid,
       'Это ваша фотогалерея в Telegram.\n\n' +
         '• Присылайте сюда фото — они сразу появятся в галерее. Чтобы сохранить без сжатия, отправляйте их файлом.\n' +
-        '• Или загружайте прямо из галереи кнопкой «Загрузить».\n\n' +
+        '• Или загружайте прямо из галереи кнопкой «+».\n\n' +
         'Фото хранятся в этом чате. Удалить фото можно корзиной в галерее.\n\n' +
         'Как пользоваться и как настроить автозагрузку с iPhone: https://github.com/wickedslim/tg-photo-bot/blob/main/docs/user-guide.md',
       env.WEBAPP_URL ? { inline_keyboard: [[{ text: 'Открыть галерею', web_app: { url: env.WEBAPP_URL } }]] } : undefined,
@@ -387,7 +387,6 @@ async function upload(request, env, url) {
     // Скриншоты автозагрузка не берёт. Фильтр «Не снимок экрана» в «Командах» на iOS 26 не работает,
     // поэтому отсеиваем их здесь — по метке «Screenshot», которую iPhone пишет в метаданные.
     const shot = who.source === 'auto' && isScreenshot(bytes);
-    if (who.source === 'auto') console.log(JSON.stringify({ auto: 1, shot, head: [...bytes.subarray(0, 4)].map((b) => b.toString(16)).join(''), size: buf.byteLength }));
     if (shot) {
       skipped++;
       continue;
@@ -611,7 +610,7 @@ async function keyOwner(request, env) {
   const key = KEY_RE.exec(h)?.[1];
   if (!key) throw new HttpError(401, 'bad_key', 'Нет ключа автозагрузки или он записан с ошибкой');
   const row = await userByKey(env.DB, await sha256(key));
-  if (!row) throw new HttpError(401, 'bad_key', 'Ключ не подходит — создайте новый в приложении (Настройки → Автозагрузка)');
+  if (!row) throw new HttpError(401, 'bad_key', 'Ключ не подходит — подключите автозагрузку заново в галерее: «…» → «Автозагрузка с iPhone»');
   if (!allowedUser(env, row.user_id)) throw new HttpError(403, 'forbidden', 'Этот бот закрыт владельцем для посторонних');
   return row;
 }

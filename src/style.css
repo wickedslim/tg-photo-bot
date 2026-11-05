@@ -65,10 +65,13 @@ input { font: inherit; color: inherit; }
   background: linear-gradient(to top, rgba(0,0,0,.35), rgba(0,0,0,0)); }
 .topbar { position: absolute; left: 0; right: 0; top: 0; padding: calc(var(--top-inset) + 10px) 16px 0 18px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; color: #fff; pointer-events: none; }
 .topbar > * { pointer-events: auto; }
-.topbar-title { font-size: 28px; font-weight: 700; letter-spacing: .2px; line-height: 1.15; text-shadow: 0 1px 8px rgba(0,0,0,.25); }
-.topbar-sub { font-size: 15px; font-weight: 600; opacity: .85; min-height: 0; }
+.topbar-text { flex: 1; min-width: 0; }
+/* Заголовок — всегда в одну строку: на узких iPhone чуть мельче, а не переносится под кнопки. */
+.topbar-title { font-size: clamp(22px, 6.6vw, 28px); font-weight: 700; letter-spacing: .2px; line-height: 1.15; text-shadow: 0 1px 8px rgba(0,0,0,.25);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar-sub { font-size: 15px; font-weight: 600; opacity: .85; min-height: 0; text-shadow: 0 1px 6px rgba(0,0,0,.25); }
 .topbar-sub:empty { display: none; }
-.topbar-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.topbar-actions { flex: none; display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 .pill { height: 32px; min-width: 32px; padding: 0 12px; border-radius: 16px; background: rgba(120,120,128,.4); color: #fff; font-size: 15px; font-weight: 600;
   backdrop-filter: blur(20px) saturate(1.6); -webkit-backdrop-filter: blur(20px) saturate(1.6); display: inline-flex; align-items: center; justify-content: center; }
 .pill.icon { padding: 0; width: 32px; }
