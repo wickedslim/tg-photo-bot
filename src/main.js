@@ -92,6 +92,13 @@ async function startLibrary(disk, ns) {
     await persist(prev.updated || Date.now());
   }
 
+  // Что стало с сообщением в Telegram (ответ сервера): 'deleted' — удалено, 'replaced' — старое, бот заменил
+  // снимок заглушкой «Фото удалено», 'kept' — фото прислал сам человек больше 48 часов назад, боту его не тронуть.
+  function deletedText(chat) {
+    if (chat === 'replaced') return 'Фото удалено. В чате на его месте осталась заглушка — её можно стереть вручную';
+    if (chat === 'kept') return 'Удалено из галереи. Это фото вы присылали боту сами больше 48 часов назад — удалите его в чате вручную';
+    return 'Фото удалено';
+  }
   // Удаление: сервер убирает фото из базы и (если Telegram разрешит) из чата, мы — из ленты и избранного.
   async function removeItem(it) {
     const res = await disk.deletePhoto(it);
@@ -101,7 +108,7 @@ async function startLibrary(disk, ns) {
     const prev = (await loadIndex(ns)) || {};
     await persist(prev.updated || Date.now());
     haptic('medium');
-    toast(res?.chat === 'kept' ? 'Удалено из галереи. В чате сообщение старше 48 часов — удалите его там вручную' : 'Фото удалено');
+    toast(deletedText(res?.chat));
   }
   // Удалить сразу несколько фото (лишние копии из «Дубликатов»): по одному, потом один раз обновляем ленту.
   async function removeMany(list) {
@@ -123,7 +130,7 @@ async function startLibrary(disk, ns) {
     const prev = (await loadIndex(ns)) || {};
     await persist(prev.updated || Date.now());
     haptic('medium');
-    toast(kept ? `Удалено: ${gone.size}. В чате с ботом остались сообщения старше 48 часов (${kept}) — удалите их там вручную` : `Удалено: ${gone.size}`);
+    toast(kept ? `Удалено: ${gone.size}. Не получилось убрать из Telegram ${kept} — это фото, которые вы присылали боту сами больше 48 часов назад: удалите их в чате вручную` : `Удалено: ${gone.size}`);
   }
 
   const collections = new Collections(tabEl('collections'), {

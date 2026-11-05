@@ -17,6 +17,7 @@ const B = 222;
 let mf;
 const sent = []; // что бот отправлял в Telegram: { method, chat_id }
 let msgId = 1000;
+const OLD = new Set([10]); // «старые» сообщения (больше 48 часов): удалить нельзя. №10 ещё и прислал сам человек — менять нельзя
 
 function fakeTelegram(request) {
   const url = new URL(request.url);
@@ -45,8 +46,14 @@ function fakeTelegram(request) {
     else if (method === 'deleteMessage') {
       // Сообщение №10 «старое» — Telegram не даёт боту его удалить.
       sent.push({ method, chat_id: Number(body.chat_id), message_id: body.message_id });
-      if (body.message_id === 10) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted for everyone" });
+      if (OLD.has(Number(body.message_id))) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted for everyone" });
       return Response.json({ ok: true, result: true });
+    } else if (method === 'editMessageMedia') {
+      const media = JSON.parse(body.media);
+      sent.push({ method, chat_id: Number(body.chat_id), message_id: Number(body.message_id), type: media.type, caption: media.caption, upload: body.f instanceof File || body.f instanceof Blob });
+      if (Number(body.message_id) === 10) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be edited" });
+      const file = { file_id: 'stub_' + media.type, file_unique_id: 'stubu' };
+      return Response.json({ ok: true, result: { message_id: Number(body.message_id), date: 1, chat: { id: Number(body.chat_id), type: 'private' }, ...(media.type === 'photo' ? { photo: [{ ...file, width: 320, height: 320 }] } : { document: file }), caption: media.caption } });
     } else if (method === 'sendMediaGroup') result = JSON.parse(body.media).map(() => msg({ photo: photo('g' + msgId) }));
     else return Response.json({ ok: false, error_code: 400, description: 'unknown method' });
     sent.push({ method, chat_id: Number(body.chat_id) });
@@ -452,6 +459,7 @@ test('канал владельца: подключение, фото из ка�
   // без права удалять — бот предупреждает
   const warn = await (await hook(member('administrator', O, { can_post_messages: true, can_delete_messages: false }))).json();
   assert.match(warn.text, /Удалять сообщения/);
+  assert.match(warn.text, /Редактировать сообщения/);
 
   // бота убрали из администраторов — новые фото из канала больше не берём
   const bye = await (await hook(member('left', O))).json();
@@ -508,6 +516,35 @@ test('удаление: своё — из галереи и из чата, чу�
   const r2 = await (await api(`/api/photo/${first.i}`, { user: A, method: 'DELETE' })).json();
   assert.equal(r2.chat, 'kept');
   assert.ok(!(await listOf(A)).items.some((it) => it.i === first.i));
+});
+
+test('удаление старого фото, отправленного ботом: в чате оно заменяется заглушкой', async () => {
+  const C = 4242;
+  const up = async (t) => {
+    const form = new FormData();
+    form.set('f0', jpeg(t));
+    const body = await (await api('/api/upload', { user: C, method: 'POST', body: form })).json();
+    OLD.add(msgId); // пусть это сообщение будет «старым»
+    return body.items[0];
+  };
+  const one = await up('stub-1');
+  const two = await up('stub-2');
+
+  sent.length = 0;
+  const r = await (await api(`/api/photo/${one.i}`, { user: C, method: 'DELETE' })).json();
+  assert.equal(r.chat, 'replaced');
+  assert.equal(sent[0].method, 'deleteMessage');
+  assert.deepEqual({ ...sent[1], message_id: 0 }, { method: 'editMessageMedia', chat_id: C, message_id: 0, type: 'photo', caption: 'Фото удалено из галереи', upload: true });
+  assert.ok(!(await listOf(C)).items.some((it) => it.i === one.i));
+
+  // вторая заглушка — уже по file_id, без повторной загрузки картинки
+  sent.length = 0;
+  assert.equal((await (await api(`/api/photo/${two.i}`, { user: C, method: 'DELETE' })).json()).chat, 'replaced');
+  assert.equal(sent[1].upload, false);
+
+  // если Telegram пришлёт заглушку обратно (правка в канале) — в галерею она не попадает
+  await hook({ update_id: 7001, edited_message: { message_id: 1, date: 1, caption: 'Фото удалено из галереи', from: { id: C, first_name: 'C' }, chat: { id: C, type: 'private' }, photo: [{ file_id: 'stub_photo', file_unique_id: 'stubu', width: 320, height: 320 }] } });
+  assert.equal((await listOf(C)).items.length, 0);
 });
 
 test('CORS: чужой сайт не получает разрешения', async () => {

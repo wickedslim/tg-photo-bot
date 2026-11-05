@@ -4,7 +4,7 @@
 //   GET  /api/list        — список фото того, кто спрашивает
 //   POST /api/upload      — загрузить фото из приложения в чат пользователя с ботом
 //   GET  /api/file/:id    — скачать фото (только владельцу); токен бота наружу не попадает
-//   DELETE /api/photo/:id — удалить фото из галереи (и сообщение из чата, если Telegram разрешит)
+//   DELETE /api/photo/:id — удалить фото из галереи и из чата (старое — заменить в чате заглушкой)
 //   POST /api/photo/:id/preview — лёгкая копия оригинала для быстрого просмотра (делает приложение)
 //   GET/POST/DELETE /api/auto/key — личный ключ автозагрузки (создать, узнать, отключить)
 //   GET  /api/auto/since  — с какой даты съёмки «Быстрой команде» искать новые фото
@@ -17,6 +17,7 @@
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
+import { stubJpeg, STUB_CAPTION } from './stub.js';
 import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
@@ -167,6 +168,7 @@ async function webhook(request, env) {
 // Фото, присланное боту или опубликованное в канале. Если такое уже есть в галерее, второй раз не
 // добавляем (сообщение в чате остаётся — его можно удалить самому).
 async function saveIncoming(env, uid, rec) {
+  if (rec.caption === STUB_CAPTION) return; // заглушка вместо удалённого фото — не фото
   if (await findDuplicate(env.DB, uid, rec)) return;
   if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
   await savePhotos(env.DB, uid, [rec]);
@@ -174,7 +176,8 @@ async function saveIncoming(env, uid, rec) {
 
 // ── Канал владельца ──
 // Бота сделали администратором канала: всё, что публикуется в этом канале, — фото того, кто его добавил.
-// В канале бот может удалять сообщения любой давности (в личном чате — только за последние 48 часов).
+// Удалять сообщения бот может только первые 48 часов (и в чате, и в канале); старые фото корзина заменяет
+// заглушкой — в канале для этого нужно право «Редактировать сообщения».
 async function memberUpdate(env, m) {
   const chat = m.chat || {};
   if (chat.type !== 'channel' || !m.from || m.from.is_bot) return new Response('ok');
@@ -186,7 +189,9 @@ async function memberUpdate(env, m) {
     return reply(
       m.from.id,
       `Канал ${title} подключён. Всё, что вы опубликуете в нём, появится в галерее.` +
-        (st.can_delete_messages ? '' : '\n\nДайте боту в канале право «Удалять сообщения» — иначе корзина в галерее не сможет удалять фото из канала.'),
+        (st.can_delete_messages && st.can_edit_messages
+          ? ''
+          : '\n\nДайте боту в канале права «Удалять сообщения» и «Редактировать сообщения» — иначе корзина в галерее не сможет убирать фото из канала.'),
     );
   }
   if (['left', 'kicked', 'member', 'restricted'].includes(st.status)) {
@@ -522,11 +527,15 @@ async function sha256(data) {
 }
 
 // ── Удаление ──
-// Из базы удаляем всегда. Из чата — если Telegram позволит: старые сообщения (больше 48 часов)
-// бот удалить не может, тогда говорим об этом приложению, и пользователь удалит сообщение сам.
+// Из базы удаляем всегда. Из чата — как получится:
+//   • сообщению меньше 48 часов — удаляем ('deleted');
+//   • старше — удалить боту нельзя, но свои сообщения он может менять без срока: подменяем фото
+//     заглушкой «Фото удалено» ('replaced'). Так получится со всем, что отправил бот: кнопка «Загрузить»,
+//     автозагрузка, «Архив» (и с постами канала, если у бота есть право редактировать);
+//   • фото, которое человек прислал боту сам, бот не может ни удалить, ни изменить — пусть удалит в чате ('kept').
 async function removePhoto(request, env, id) {
   const uid = await authUser(request, env);
-  const row = await env.DB.prepare('SELECT chat_id, message_id FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
+  const row = await env.DB.prepare('SELECT chat_id, message_id, kind FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
   if (!row) throw new HttpError(404, 'not_found', 'Фото не найдено');
   let chat = 'deleted';
   try {
@@ -534,10 +543,49 @@ async function removePhoto(request, env, id) {
   } catch (e) {
     if (!(e instanceof TgError)) throw e;
     // «message to delete not found» — в чате его уже нет, это тоже удачное удаление.
-    if (!/not found/i.test(e.message)) chat = 'kept';
+    if (!/not found/i.test(e.message)) chat = await replaceWithStub(env, row);
   }
   await env.DB.prepare('DELETE FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).run();
   return json(request, env, { ok: true, chat });
+}
+
+// Загруженную заглушку Telegram запоминает: дальше её можно ставить по file_id, не отправляя заново.
+const stubIds = {};
+
+async function replaceWithStub(env, row) {
+  // Тип — как у фото: в альбоме Telegram разрешает менять фото только на фото, файл — только на файл.
+  const type = row.kind === 'doc' ? 'document' : 'photo';
+  const edit = async (media, files) => {
+    const fd = new FormData();
+    fd.set('chat_id', String(row.chat_id));
+    fd.set('message_id', String(row.message_id));
+    fd.set('media', JSON.stringify({ type, media, caption: STUB_CAPTION, ...(files && type === 'document' ? { thumbnail: 'attach://t' } : {}) }));
+    if (files) {
+      fd.set('f', stubJpeg(), 'udaleno.jpg');
+      if (type === 'document') fd.set('t', stubJpeg(), 't.jpg');
+    }
+    return callApi(env.BOT_TOKEN, 'editMessageMedia', fd, { waitUpTo: 3 });
+  };
+  try {
+    let msg;
+    if (stubIds[type]) {
+      try {
+        msg = await edit(stubIds[type]);
+      } catch (e) {
+        if (!(e instanceof TgError) || !/file|wrong/i.test(e.message)) throw e;
+        delete stubIds[type]; // Telegram забыл файл — загрузим заглушку заново
+      }
+    }
+    msg ||= await edit('attach://f', true);
+    const id = type === 'document' ? msg?.document?.file_id : msg?.photo?.at?.(-1)?.file_id;
+    if (id) stubIds[type] = id;
+    return 'replaced';
+  } catch (e) {
+    if (!(e instanceof TgError)) return 'kept';
+    if (/not modified/i.test(e.message)) return 'replaced'; // заглушка уже стоит
+    if (/not found/i.test(e.message)) return 'deleted';
+    return 'kept'; // «message can't be edited»: фото прислал сам человек
+  }
 }
 
 // ── Автозагрузка: личный ключ ──

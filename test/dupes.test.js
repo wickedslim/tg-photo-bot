@@ -24,7 +24,8 @@ test('дубликаты: тот же файл дважды — одна гру�
   const groups = exactGroups([a, b, c, d]);
   assert.equal(groups.length, 1);
   assert.deepEqual(groups[0].map((x) => x.i), [1, 2]);
-  assert.equal(pickKeeper(groups[0]).i, 2); // копия из канала
+  assert.equal(pickKeeper(groups[0]).i, 1); // копия, присланная боту вручную: её бот из чата не уберёт
+  assert.equal(pickKeeper([{ i: 7, k: 'd', o: 'auto' }, { i: 8, k: 'd' }]).i, 8);
   assert.equal(pickKeeper([{ i: 5, k: 'p' }, { i: 6, k: 'd' }]).i, 6); // оригинал лучше сжатого
 });
 

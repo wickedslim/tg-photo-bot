@@ -135,7 +135,8 @@ export class Api {
     });
   }
 
-  // Удалить фото. Ответ: chat = 'deleted' (и из чата) или 'kept' (сообщение старое — удалите в чате сами).
+  // Удалить фото. Ответ: chat = 'deleted' (и из чата), 'replaced' (старое — в чате заменено заглушкой)
+  // или 'kept' (старое и прислано самим человеком — удалите в чате сами).
   deletePhoto(item) {
     return this.req(`/api/photo/${item.i}`, { method: 'DELETE' });
   }
