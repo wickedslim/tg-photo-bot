@@ -67,4 +67,10 @@ test('токен для файлов: свой проходит, подделк�
   await rejects(verifyFileToken(token, '999:OTHER', { now }), 'bad_token');
   await rejects(verifyFileToken(token, TOKEN, { now: now + 2 * 86400 * 1000 }), 'expired');
   await rejects(verifyFileToken('мусор', TOKEN), 'bad_token');
+  // весь день токен один и тот же — адреса фото не меняются, телефон берёт их из кэша
+  const later = await makeFileToken(111, TOKEN, { now: Math.floor(now / 86400000) * 86400000 + 86399000 });
+  const earlier = await makeFileToken(111, TOKEN, { now: Math.floor(now / 86400000) * 86400000 });
+  assert.equal(later.token, earlier.token);
+  // и живёт не меньше суток
+  assert.equal(await verifyFileToken(later.token, TOKEN, { now: Math.floor(now / 86400000) * 86400000 + 86399000 + 86400000 - 1000 }), 111);
 });

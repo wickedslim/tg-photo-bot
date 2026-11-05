@@ -103,8 +103,12 @@ export function initDataFromRequest(request) {
 }
 
 // ── Токен для файлов: "<uid>.<exp>.<подпись>" ──
-export async function makeFileToken(uid, botToken, { ttl = 86400, now = Date.now() } = {}) {
-  const exp = Math.floor(now / 1000) + ttl;
+const DAY = 86400;
+
+// Токен один и тот же весь день (по UTC) и живёт от суток до двух: адреса фото не меняются между
+// запусками галереи, и телефон берёт уже открытые фото из своего кэша, а не качает их заново.
+export async function makeFileToken(uid, botToken, { now = Date.now() } = {}) {
+  const exp = (Math.floor(now / 1000 / DAY) + 2) * DAY;
   const body = `${uid}.${exp}`;
   return { token: `${body}.${toB64url(await hmac((await keysFor(botToken)).file, body))}`, exp };
 }
