@@ -1,7 +1,8 @@
 // «Коллекции» как на iPhone. Всё считается прямо на устройстве из индекса за миллисекунды,
 // поэтому коллекции пересобираются при каждом обновлении списка — никаких расписаний не нужно.
 import { Grid, el, photosCount, dayLabel, monthLabel } from './grid.js';
-import { pushBack } from './tg.js';
+import { pushBack, confirmDestructive } from './tg.js';
+import { exactGroups, similarGroups, pickKeeper } from './dupes.js';
 
 const DAY = 86400000;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -155,8 +156,9 @@ const isScreenshot = (it) => /\.png$/i.test(it.n) || /screenshot|скриншо�
 
 // ── Экран ──────────────────────────────────────────────────────────
 export class Collections {
-  constructor(root, { loader, favorites, indexer, openPage, askName }) {
+  constructor(root, { loader, favorites, indexer, openPage, askName, onDeleteMany }) {
     this.loader = loader;
+    this.onDeleteMany = onDeleteMany;
     this.indexer = indexer;
     this.askName = askName;
     this.favorites = favorites;
@@ -198,7 +200,55 @@ export class Collections {
   }
 
   open(col) {
+    if (col.dupes) return this.openDupes(col);
     this.openPage({ title: col.title, items: col.items });
+  }
+
+  // Точные копии: показываем все, а кнопкой удаляем лишние — в каждой группе остаётся одна.
+  openDupes(col) {
+    const extras = col.dupes.flatMap((g) => {
+      const keep = pickKeeper(g);
+      return g.filter((it) => it !== keep);
+    });
+    const page = this.openPage({
+      title: col.title,
+      items: col.items,
+      action: this.onDeleteMany && {
+        label: 'Удалить копии',
+        onClick: async () => {
+          const ok = await confirmDestructive({
+            title: `Удалить ${photosCount(extras.length)}?`,
+            message: 'Это лишние копии: от каждого фото останется одно — лучшего качества. Копии удалятся из галереи и из чата или канала.',
+            ok: 'Удалить копии',
+          });
+          if (!ok) return;
+          await this.onDeleteMany(extras);
+          page.close();
+        },
+      },
+    });
+  }
+
+  // Похожие снимки считаются по «отпечаткам» из анализа фото — заново, только когда что-то изменилось.
+  similar(items) {
+    const ix = this.indexer;
+    if (!ix.enabled) return [];
+    const key = `${items.length}|${items[items.length - 1]?.i}|${ix.recs.size}`;
+    // Пока идёт анализ, отпечатки прибывают каждую секунду — пересчитываем не чаще раза в 30 секунд.
+    if (this.simKey !== key && ix.state === 'running' && Date.now() - (this.simAt || 0) < 30000) return this.simGroups || [];
+    if (this.simKey !== key) {
+      this.simAt = Date.now();
+      // Для 10 000 фото это полсекунды-секунда — считаем после отрисовки, потом обновляем коллекции.
+      this.simKey = key;
+      clearTimeout(this.simT);
+      this.simT = setTimeout(() => {
+        const groups = similarGroups(this.items, ix.recs);
+        const changed = groups.length !== (this.simGroups || []).length || groups.flat().length !== (this.simGroups || []).flat().length;
+        this.simGroups = groups;
+        if (changed) this.render(true);
+      }, 600);
+    }
+    return this.simGroups || [];
   }
 
   openPerson(person) {
@@ -316,6 +366,13 @@ export class Collections {
     if (shots.length) types.push({ title: 'Скриншоты', sub: shots.length.toLocaleString('ru'), items: shots, icon: 'shot' });
     const geoItems = items.filter((it) => it.la != null);
     if (geoItems.length) types.push({ title: 'С геометкой', sub: geoItems.length.toLocaleString('ru'), items: geoItems, icon: 'pin' });
+    const exact = exactGroups(items);
+    if (exact.length) {
+      const extra = exact.reduce((n, g) => n + g.length - 1, 0);
+      types.push({ title: 'Дубликаты', sub: `лишних ${extra.toLocaleString('ru')}`, items: exact.flat(), icon: 'dup', dupes: exact });
+    }
+    const sim = this.similar(items);
+    if (sim.length) types.push({ title: 'Похожие', sub: `групп ${sim.length.toLocaleString('ru')}`, items: sim.flat(), icon: 'similar' });
 
     for (const j of this.jobs.values()) j.cancel();
     this.jobs.clear();
@@ -387,6 +444,8 @@ export class Collections {
 const ICON = {
   heart: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 20.3s-7.8-4.6-7.8-10.4A4.4 4.4 0 0 1 12 7.2a4.4 4.4 0 0 1 7.8 2.7c0 5.8-7.8 10.4-7.8 10.4Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
   shot: '<svg viewBox="0 0 24 24" width="22" height="22"><rect x="6" y="2.5" width="12" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  dup: '<svg viewBox="0 0 24 24" width="22" height="22"><rect x="3.5" y="7.5" width="12" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 4.5h9a2.5 2.5 0 0 1 2.5 2.5v9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  similar: '<svg viewBox="0 0 24 24" width="22" height="22"><rect x="2.5" y="6" width="9" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="12.5" y="6" width="9" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m5 15 2.5-3 2 2.2M15 15l2.5-3 2 2.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
   pin: '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11Z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="10" r="2.3" fill="currentColor"/></svg>',
 };
 

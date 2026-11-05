@@ -103,12 +103,36 @@ async function startLibrary(disk, ns) {
     haptic('medium');
     toast(res?.chat === 'kept' ? 'Удалено из галереи. В чате сообщение старше 48 часов — удалите его там вручную' : 'Фото удалено');
   }
+  // Удалить сразу несколько фото (лишние копии из «Дубликатов»): по одному, потом один раз обновляем ленту.
+  async function removeMany(list) {
+    const gone = new Set();
+    let kept = 0;
+    try {
+      for (const it of list) {
+        const res = await disk.deletePhoto(it);
+        gone.add(it.p);
+        if (res?.chat === 'kept') kept++;
+        if (favorites.has(it.p)) favorites.toggle(it.p);
+      }
+    } catch (e) {
+      toast(e?.message || 'Не удалось удалить');
+    }
+    if (!gone.size) return;
+    all = all.filter((x) => !gone.has(x.p));
+    apply();
+    const prev = (await loadIndex(ns)) || {};
+    await persist(prev.updated || Date.now());
+    haptic('medium');
+    toast(kept ? `Удалено: ${gone.size}. В чате с ботом остались сообщения старше 48 часов (${kept}) — удалите их там вручную` : `Удалено: ${gone.size}`);
+  }
+
   const collections = new Collections(tabEl('collections'), {
     loader: thumbs,
     favorites,
     indexer,
     askName,
     openPage: (opts) => openPage(tabEl('collections'), { ...opts, loader: thumbs, onOpen: openV }),
+    onDeleteMany: removeMany,
   });
   const search = new Search(tabEl('search'), { loader: thumbs, onOpen: openV, indexer });
 

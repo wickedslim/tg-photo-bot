@@ -104,6 +104,7 @@ export function extractPhoto(msg) {
       medium_id: atLeast(700).file_id,
       large_id: largest.file_id,
       orig_id: largest.file_id,
+      fuid: largest.file_unique_id || null,
       sizes: JSON.stringify(sizes.map(short)),
     };
   }
@@ -128,6 +129,7 @@ export function extractPhoto(msg) {
       medium_id: thumb ? thumb.file_id : doc.file_id,
       large_id: doc.file_id,
       orig_id: doc.file_id,
+      fuid: doc.file_unique_id || null,
       sizes: JSON.stringify(sizes),
     };
   }

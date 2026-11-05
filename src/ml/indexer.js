@@ -4,41 +4,13 @@
 import { createStore, entries, setMany, clear } from 'idb-keyval';
 import { PreviewLoader } from '../loader.js';
 import { detectFaces, loadFaces } from './faces.js';
+import { pack, unpack, dotPacked, dot, normalized } from './vec.js';
 
 const FACE_T = 0.64; // порог «тот же человек» (калибровка: свой 0.66–0.92, чужие ≤ 0.51, родственники до 0.63)
 const MIN_PHOTOS_FOR_PERSON = 3;
 const MAX_SIDE = 640;
 
 // ── Компактное хранение векторов: int8 + масштаб ──
-function pack(v) {
-  let m = 0;
-  for (let i = 0; i < v.length; i++) m = Math.max(m, Math.abs(v[i]));
-  const q = new Int8Array(v.length);
-  const k = m ? 127 / m : 0;
-  for (let i = 0; i < v.length; i++) q[i] = Math.round(v[i] * k);
-  return { q, s: m / 127 };
-}
-function unpack({ q, s }) {
-  const v = new Float32Array(q.length);
-  for (let i = 0; i < q.length; i++) v[i] = q[i] * s;
-  return v;
-}
-function dotPacked({ q, s }, v) {
-  let sum = 0;
-  for (let i = 0; i < q.length; i++) sum += q[i] * v[i];
-  return sum * s;
-}
-function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-function normalized(v) {
-  const s = Math.sqrt(dot(v, v)) || 1;
-  const out = new Float32Array(v.length);
-  for (let i = 0; i < v.length; i++) out[i] = v[i] / s;
-  return out;
-}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Обёртка над фоновым потоком CLIP ──

@@ -92,7 +92,7 @@ const hook = (update, secret = SECRET) =>
 const listOf = async (user) => (await (await api('/api/list', { user })).json());
 const photoMsg = (from, message_id, extra = {}) => ({
   update_id: message_id,
-  message: { message_id, date: 1700000000 + message_id, from: { id: from, is_bot: false, first_name: 'T' }, chat: { id: from, type: 'private' }, photo: [{ file_id: `u${from}_${message_id}`, file_unique_id: 'x', width: 1280, height: 960 }], ...extra },
+  message: { message_id, date: 1700000000 + message_id, from: { id: from, is_bot: false, first_name: 'T' }, chat: { id: from, type: 'private' }, photo: [{ file_id: `u${from}_${message_id}`, file_unique_id: `uu${from}_${message_id}`, width: 1280, height: 960 }], ...extra },
 });
 const jpeg = (text) => new File([text], 'IMG_1.jpg', { type: 'image/jpeg' });
 
@@ -293,7 +293,7 @@ test('дата и место съёмки: из файла, присланног
   const C = 333;
   await hook({
     update_id: 500,
-    message: { message_id: 500, date: 1700000000, from: { id: C, first_name: 'T' }, chat: { id: C, type: 'private' }, document: { file_id: 'doc_exif', file_unique_id: 'x', file_name: 'IMG_1.JPG', mime_type: 'image/jpeg', file_size: 3000 } },
+    message: { message_id: 500, date: 1700000000, from: { id: C, first_name: 'T' }, chat: { id: C, type: 'private' }, document: { file_id: 'doc_exif', file_unique_id: 'doc_exif_u', file_name: 'IMG_1.JPG', mime_type: 'image/jpeg', file_size: 3000 } },
   });
   // сжатое фото из чата — даты съёмки нет, остаётся дата сообщения
   await hook(photoMsg(C, 501));
@@ -419,7 +419,7 @@ test('канал владельца: подключение, фото из ка�
   });
   const post = (message_id, extra = {}) => ({
     update_id: 900 + message_id,
-    channel_post: { message_id, date: 1700000500, chat: { id: CH, type: 'channel', title: 'Мои фото' }, photo: [{ file_id: `ch_${message_id}`, file_unique_id: 'x', width: 1280, height: 960 }], ...extra },
+    channel_post: { message_id, date: 1700000500, chat: { id: CH, type: 'channel', title: 'Мои фото' }, photo: [{ file_id: `ch_${message_id}`, file_unique_id: `chu_${message_id}`, width: 1280, height: 960 }], ...extra },
   });
 
   // пока канал не подключён — фото оттуда не берём
@@ -458,6 +458,30 @@ test('канал владельца: подключение, фото из ка�
   assert.equal(bye.chat_id, O);
   await hook(post(6));
   assert.equal((await listOf(O)).items.length, 1);
+});
+
+test('повторы: то же фото ещё раз в чат или в канал в галерею не попадает', async () => {
+  const D = 888;
+  const CH = -1009999;
+  await hook({ update_id: 950, my_chat_member: { chat: { id: CH, type: 'channel', title: 'Дубли' }, from: { id: D, is_bot: false, first_name: 'T' }, date: 1, old_chat_member: { status: 'left', user: { id: 1, is_bot: true } }, new_chat_member: { status: 'administrator', can_delete_messages: true, user: { id: 1, is_bot: true } } } });
+  const doc = (file_unique_id, extra = {}) => ({ file_id: 'f_' + file_unique_id, file_unique_id, file_name: 'IMG_0333.HEIC', mime_type: 'image/heic', file_size: 2647805, ...extra });
+  const dm = (message_id, document) => ({ update_id: 950 + message_id, message: { message_id, date: 1700000000, from: { id: D, first_name: 'T' }, chat: { id: D, type: 'private' }, document } });
+  const post = (message_id, document) => ({ update_id: 970 + message_id, channel_post: { message_id, date: 1700000000, chat: { id: CH, type: 'channel' }, document } });
+
+  await hook(dm(1, doc('same')));
+  await hook(post(1, doc('same'))); // тот же файл опубликовали в канале
+  await hook(post(2, doc('other-upload'))); // тот же файл, загруженный заново: другой отпечаток, но имя и размер те же
+  await hook(dm(2, doc('different', { file_size: 123456 }))); // другое фото с тем же именем — это не повтор
+  // правка подписи у самого первого сообщения — это не повтор, подпись обновляется
+  await hook({ update_id: 999, edited_message: { ...dm(1, doc('same')).message, caption: 'колёса' } });
+  // пересланное сжатое фото: тот же отпечаток самого большого размера
+  const ph = (message_id) => ({ update_id: 990 + message_id, message: { message_id, date: 1700000000, from: { id: D, first_name: 'T' }, chat: { id: D, type: 'private' }, photo: [{ file_id: `p${message_id}`, file_unique_id: 'photo-same', width: 1280, height: 960 }] } });
+  await hook(ph(3));
+  await hook(ph(4));
+
+  const items = (await listOf(D)).items;
+  assert.equal(items.length, 3);
+  assert.equal(items.find((x) => x.s === 2647805).c, 'колёса');
 });
 
 test('удаление: своё — из галереи и из чата, чужое — нельзя, старое сообщение — только из галереи', async () => {

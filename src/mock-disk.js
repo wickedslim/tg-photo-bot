@@ -65,6 +65,10 @@ export class MockDisk {
       }
       day += 1 + Math.floor(rand() * (day < 30 ? 3 : 28)); // снимки за несколько лет
     }
+    // Два фото, присланные дважды, — для раздела «Дубликаты».
+    for (const src of items.filter((x) => x.k === 'd').slice(0, 2)) {
+      items.push({ ...src, p: src.p.replace(/\.jpg$/, ' (2).jpg'), o: 'channel' });
+    }
     return items;
   }
 

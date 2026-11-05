@@ -17,7 +17,7 @@
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -160,11 +160,16 @@ async function webhook(request, env) {
     );
   }
   const rec = extractPhoto(msg);
-  if (rec) {
-    if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
-    await savePhotos(env.DB, uid, [rec]);
-  }
+  if (rec) await saveIncoming(env, uid, rec);
   return new Response('ok');
+}
+
+// Фото, присланное боту или опубликованное в канале. Если такое уже есть в галерее, второй раз не
+// добавляем (сообщение в чате остаётся — его можно удалить самому).
+async function saveIncoming(env, uid, rec) {
+  if (await findDuplicate(env.DB, uid, rec)) return;
+  if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
+  await savePhotos(env.DB, uid, [rec]);
 }
 
 // ── Канал владельца ──
@@ -197,8 +202,7 @@ async function channelPost(env, post) {
   const rec = extractPhoto(post);
   if (rec) {
     rec.source = 'channel';
-    if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
-    await savePhotos(env.DB, owner.user_id, [rec]);
+    await saveIncoming(env, owner.user_id, rec);
   }
   return new Response('ok');
 }

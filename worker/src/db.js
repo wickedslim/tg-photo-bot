@@ -1,7 +1,7 @@
 // Работа с базой D1: одна таблица photos, у каждой записи есть владелец user_id.
 // Все запросы на чтение фильтруют по user_id — чужие фото не видны и не скачиваются.
 
-const COLS = ['user_id', 'chat_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon'];
+const COLS = ['user_id', 'chat_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon', 'fuid'];
 
 // pv — у оригинала (фото файлом) есть лёгкая копия для просмотра. Если правят подпись сообщения
 // с тем же файлом (вебхук edited_message), копия сохраняется.
@@ -155,4 +155,24 @@ export function linkChannel(db, userId, chatId, title, canDelete, now) {
 
 export function unlinkChannel(db, chatId) {
   return db.prepare('DELETE FROM channels WHERE chat_id = ? RETURNING user_id, title').bind(chatId).first();
+}
+
+// Такое фото уже есть в галерее (не считая самого этого сообщения — например, при правке подписи)?
+// Тот же файл по отпечатку Telegram, или файл-оригинал с тем же именем и размером.
+export async function findDuplicate(db, userId, rec) {
+  const conds = [];
+  const args = [userId, rec.chat_id ?? userId, rec.message_id];
+  if (rec.fuid) {
+    conds.push('fuid = ?');
+    args.push(rec.fuid);
+  }
+  if (rec.kind === 'doc' && rec.name && rec.size) {
+    conds.push("(kind = 'doc' AND name = ? AND size = ?)");
+    args.push(rec.name, rec.size);
+  }
+  if (!conds.length) return null;
+  return db
+    .prepare(`SELECT id FROM photos WHERE user_id = ? AND NOT (chat_id = ? AND message_id = ?) AND (${conds.join(' OR ')}) LIMIT 1`)
+    .bind(...args)
+    .first();
 }
