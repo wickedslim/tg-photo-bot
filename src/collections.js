@@ -1,6 +1,6 @@
 // «Коллекции» как на iPhone. Всё считается прямо на устройстве из индекса за миллисекунды,
 // поэтому коллекции пересобираются при каждом обновлении списка — никаких расписаний не нужно.
-import { Grid, el, photosCount, dayLabel, monthLabel } from './grid.js';
+import { Grid, selection, el, photosCount, dayLabel, monthLabel } from './grid.js';
 import { pushBack, confirmDestructive } from './tg.js';
 import { exactGroups, similarGroups, pickKeeper } from './dupes.js';
 
@@ -466,18 +466,23 @@ function placeFace(img, box, b) {
 }
 
 // ── Страница коллекции (открывается поверх вкладки, как push в iOS) ──
-export function openPage(parent, { title, items, loader, onOpen, action }) {
+export function openPage(parent, { title, items, loader, onOpen, action, onDeleteMany }) {
+  // Без своей кнопки справа у страницы — «Выбрать»: отметить несколько фото и удалить.
+  const canSelect = !action && onDeleteMany && items.length > 0;
+  let list = items;
   const page = el('div', 'page');
   page.innerHTML = `
     <div class="page-grid scroller"></div>
     <header class="page-head">
       <button class="page-back" aria-label="Назад"><svg viewBox="0 0 24 24" width="24" height="24"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Назад</button>
-      <div class="page-title"><div class="page-title-text">${esc(title)}</div><div class="muted">${photosCount(items.length)}</div></div>
+      ${canSelect ? '<button class="page-selall" hidden>Выбрать все</button>' : ''}
+      <div class="page-title"><div class="page-title-text">${esc(title)}</div><div class="muted page-count">${photosCount(items.length)}</div></div>
       ${action ? `<button class="page-action">${esc(action.label)}</button>` : ''}
+      ${canSelect ? '<button class="page-action">Выбрать</button>' : ''}
     </header>
     ${items.length ? '' : '<div class="empty">Здесь пока пусто</div>'}`;
   parent.append(page);
-  const grid = new Grid(page.querySelector('.page-grid'), { loader, onOpen: (i) => onOpen(items, i, grid) });
+  const grid = new Grid(page.querySelector('.page-grid'), { loader, onOpen: (i) => onOpen(list, i, grid) });
   requestAnimationFrame(() => {
     page.classList.add('open');
     grid.setItems(items, { reset: true });
@@ -493,6 +498,30 @@ export function openPage(parent, { title, items, loader, onOpen, action }) {
   page.querySelector('.page-back').addEventListener('click', close);
   swipeBack(page, close);
   if (action) page.querySelector('.page-action').addEventListener('click', action.onClick);
+  if (canSelect) {
+    const btn = page.querySelector('.page-action');
+    const all = page.querySelector('.page-selall');
+    const sel = selection(page, {
+      grid,
+      // Удалённые фото сразу убираем и с этой страницы.
+      onDelete: async (chosen, progress) => {
+        const gone = await onDeleteMany(chosen, progress);
+        if (!gone?.size) return;
+        list = list.filter((it) => !gone.has(it.p));
+        grid.setItems(list);
+        page.querySelector('.page-count').textContent = photosCount(list.length);
+        if (!list.length) close();
+      },
+      onToggle: (on) => {
+        page.classList.toggle('selecting', on);
+        btn.textContent = on ? 'Готово' : 'Выбрать';
+        all.hidden = !on;
+      },
+      onCount: (n) => (all.textContent = n && n === list.length ? 'Снять все' : 'Выбрать все'),
+    });
+    btn.addEventListener('click', () => (sel.active ? sel.exit() : sel.enter()));
+    all.addEventListener('click', () => grid.selectAll(grid.sel.size !== list.length));
+  }
   return {
     close,
     setTitle: (t) => (page.querySelector('.page-title-text').textContent = t),

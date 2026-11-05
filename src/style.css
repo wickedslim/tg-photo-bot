@@ -349,3 +349,23 @@ input { font: inherit; color: inherit; }
 .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 1px 1px rgba(0, 0, 0, 0.16); transition: transform 0.2s; }
 .switch:checked { background: #34c759; }
 .switch:checked::after { transform: translateX(20px); }
+
+/* ── Режим «Выбрать» ── */
+.grid-inner.selecting .tile::after { content: ''; position: absolute; right: 6px; bottom: 6px; z-index: 2; width: 22px; height: 22px; box-sizing: border-box; border-radius: 50%;
+  border: 1.5px solid #fff; background: rgba(0,0,0,.12); box-shadow: 0 0 3px rgba(0,0,0,.35); }
+.grid-inner.selecting.small .tile::after { width: 13px; height: 13px; right: 2px; bottom: 2px; border-width: 1px; }
+.grid-inner.selecting .tile.sel::before { content: ''; position: absolute; inset: 0; z-index: 1; background: rgba(255,255,255,.3); }
+.grid-inner.selecting .tile.sel::after { background: var(--tint) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6.5 12.5l3.8 3.8 7.2-8.3' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/78% no-repeat; }
+.grid-inner.selecting .tile:active img { filter: none; }
+.select-bar { position: absolute; left: 50%; bottom: calc(var(--bottom-ui) + 10px); transform: translateX(-50%); z-index: 9; display: flex; align-items: center; gap: 12px;
+  padding: 3px 3px 3px 18px; border-radius: 22px; color: var(--text); font-size: 15px; font-weight: 600; white-space: nowrap;
+  background: var(--material); backdrop-filter: blur(24px) saturate(1.8); -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  box-shadow: 0 4px 24px rgba(0,0,0,.18), inset 0 0 0 .5px rgba(255,255,255,.15); }
+.select-bar[hidden] { display: none; }
+.select-del { width: 38px; height: 38px; border-radius: 19px; display: flex; align-items: center; justify-content: center; color: var(--danger); }
+.select-del:disabled { opacity: .3; }
+.library [data-act="select"] { display: none; }
+.library.on-all [data-act="select"]:not([hidden]) { display: inline-flex; }
+.library.selecting .segmented, .library.selecting [data-act="upload"], .library.selecting [data-act="settings"], .library.selecting .upload-bar { display: none; }
+.page-selall { position: absolute; left: 12px; bottom: 10px; color: var(--tint); font-size: 17px; z-index: 1; }
+.page-selall[hidden], .page.selecting .page-back { display: none; }

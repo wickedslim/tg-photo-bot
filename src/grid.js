@@ -1,5 +1,5 @@
 // Общие помощники и виртуальная сетка фото (лента, поиск, коллекции).
-import { haptic } from './tg.js';
+import { haptic, pushBack, confirmDestructive } from './tg.js';
 import { isAbort } from './api.js';
 
 const COLS = [1, 3, 5, 9];
@@ -49,9 +49,15 @@ export class Grid {
     });
     this.inner.addEventListener('click', (e) => {
       const t = e.target.closest('.tile');
-      if (t) this.onOpen(Number(t.dataset.i));
+      if (!t) return;
+      if (this.selecting) {
+        if (!this.dragged) this.toggle(Number(t.dataset.i));
+      } else this.onOpen(Number(t.dataset.i));
     });
+    this.selecting = false;
+    this.sel = new Set(); // выбранные фото — по пути файла, чтобы выбор не сбился при обновлении ленты
     this.setupPinch();
+    this.setupDragSelect();
     this.scrubBottom = scrubBottom;
     this.setupScrubber();
   }
@@ -80,6 +86,7 @@ export class Grid {
     this.top = this.padTop();
     const rows = Math.ceil(this.items.length / this.cols);
     this.inner.style.height = `${this.top + Math.max(0, rows * this.rowH - GAP)}px`;
+    this.inner.classList.toggle('small', this.cols >= 9);
     this.footer.textContent = this.items.length ? photosCount(this.items.length) : '';
     for (const [i, t] of this.tiles) this.unmount(i, t);
     this.render();
@@ -90,6 +97,11 @@ export class Grid {
     const atBottom = this.isAtBottom();
     const anchor = this.items.length && !reset ? this.anchor() : null;
     this.items = items;
+    if (this.sel.size) {
+      const have = new Set(items.map((it) => it.p));
+      for (const p of this.sel) if (!have.has(p)) this.sel.delete(p);
+      this.onSelect?.(this.sel.size);
+    }
     for (const [i, t] of this.tiles) this.unmount(i, t);
     this.layout();
     if (!anchor || atBottom) this.scrollToBottom();
@@ -178,6 +190,7 @@ export class Grid {
     const row = Math.floor(i / this.cols);
     const tile = el('div', 'tile');
     tile.dataset.i = i;
+    if (this.sel.has(item.p)) tile.classList.add('sel');
     tile.style.cssText = `width:${this.cell}px;height:${this.cell}px;transform:translate(${col * (this.cell + GAP)}px,${this.top + row * this.rowH}px)`;
     const img = el('img');
     img.alt = '';
@@ -212,6 +225,123 @@ export class Grid {
     t.job?.cancel();
     t.el.remove();
     this.tiles.delete(i);
+  }
+
+  // ── Выбор нескольких фото ──
+  setSelecting(on) {
+    this.selecting = on;
+    this.sel.clear();
+    this.inner.classList.toggle('selecting', on);
+    // Вбок палец выбирает фото, вверх-вниз — прокручивает ленту.
+    this.el.style.touchAction = on ? 'pan-y' : '';
+    for (const t of this.tiles.values()) t.el.classList.remove('sel');
+    this.onSelect?.(0);
+  }
+
+  markTiles() {
+    for (const [i, t] of this.tiles) t.el.classList.toggle('sel', this.sel.has(this.items[i]?.p));
+  }
+
+  toggle(i) {
+    const p = this.items[i]?.p;
+    if (!p) return;
+    if (this.sel.has(p)) this.sel.delete(p);
+    else this.sel.add(p);
+    this.markTiles();
+    haptic('select');
+    this.onSelect?.(this.sel.size);
+  }
+
+  selectAll(on) {
+    this.sel = new Set(on ? this.items.map((it) => it.p) : []);
+    this.markTiles();
+    this.onSelect?.(this.sel.size);
+  }
+
+  selectedItems() {
+    return this.items.filter((it) => this.sel.has(it.p));
+  }
+
+  // Провести пальцем вбок по фото — отмечаются все фото между первым и тем, что под пальцем, как на iPhone.
+  // У края экрана лента сама прокручивается дальше.
+  setupDragSelect() {
+    const s = { mode: '', x0: 0, y0: 0, x: 0, y: 0, from: -1, to: -1, on: true, base: null, raf: 0 };
+    const indexAt = (x, y) => {
+      const r = this.el.getBoundingClientRect();
+      const col = Math.min(this.cols - 1, Math.max(0, Math.floor((x - r.left) / (this.cell + GAP))));
+      const row = Math.max(0, Math.floor((y - r.top + this.el.scrollTop - this.top) / this.rowH));
+      return Math.min(this.items.length - 1, row * this.cols + col);
+    };
+    const extend = (to) => {
+      if (to === s.to || to < 0) return;
+      s.to = to;
+      const lo = Math.min(s.from, to);
+      const hi = Math.max(s.from, to);
+      this.sel = new Set(s.base);
+      for (let i = lo; i <= hi; i++) {
+        if (s.on) this.sel.add(this.items[i].p);
+        else this.sel.delete(this.items[i].p);
+      }
+      this.markTiles();
+      haptic('select');
+      this.onSelect?.(this.sel.size);
+    };
+    const autoscroll = () => {
+      s.raf = 0;
+      if (s.mode !== 'drag') return;
+      const r = this.el.getBoundingClientRect();
+      const top = r.top + this.top + 40;
+      const bottom = r.bottom - 150;
+      const v = s.y < top ? -Math.min(24, (top - s.y) / 3 + 2) : s.y > bottom ? Math.min(24, (s.y - bottom) / 3 + 2) : 0;
+      if (!v) return;
+      this.el.scrollTop += v;
+      extend(indexAt(s.x, s.y));
+      s.raf = requestAnimationFrame(autoscroll);
+    };
+    this.el.addEventListener(
+      'touchstart',
+      (e) => {
+        if (!this.selecting || e.touches.length !== 1 || !this.items.length) return void (s.mode = 'skip');
+        s.x0 = s.x = e.touches[0].clientX;
+        s.y0 = s.y = e.touches[0].clientY;
+        s.mode = '';
+        this.dragged = false;
+      },
+      { passive: true },
+    );
+    this.el.addEventListener(
+      'touchmove',
+      (e) => {
+        if (!this.selecting) return;
+        e.stopPropagation(); // пока выбираем, свайп «назад» у страницы альбома не срабатывает
+        if (s.mode === 'skip' || e.touches.length !== 1) return;
+        s.x = e.touches[0].clientX;
+        s.y = e.touches[0].clientY;
+        if (!s.mode) {
+          const dx = Math.abs(s.x - s.x0);
+          const dy = Math.abs(s.y - s.y0);
+          if (dx < 10 && dy < 10) return;
+          if (dy >= dx) return void (s.mode = 'skip');
+          s.mode = 'drag';
+          this.dragged = true;
+          s.from = indexAt(s.x0, s.y0);
+          s.to = -1;
+          s.on = !this.sel.has(this.items[s.from].p);
+          s.base = new Set(this.sel);
+        }
+        e.preventDefault();
+        extend(indexAt(s.x, s.y));
+        if (!s.raf) s.raf = requestAnimationFrame(autoscroll);
+      },
+      { passive: false },
+    );
+    const end = () => {
+      s.mode = 'skip';
+      cancelAnimationFrame(s.raf);
+      s.raf = 0;
+    };
+    this.el.addEventListener('touchend', end);
+    this.el.addEventListener('touchcancel', end);
   }
 
   // ── Ползунок прокрутки, как в «Фото» на iPhone ──
@@ -378,4 +508,66 @@ export class Grid {
       { passive: false },
     );
   }
+}
+
+// ── Режим «Выбрать» ─────────────────────────────────────────────────
+// Касание отмечает фото, ведение пальцем вбок — сразу несколько. Внизу — сколько выбрано и корзина.
+// Кнопка «Назад» в Telegram выходит из выбора.
+const TRASH = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 6.5h16M9.5 6.5V4.8c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3v1.7M6.3 6.5l.9 12.6c.1 1 .9 1.9 2 1.9h5.6c1.1 0 1.9-.9 2-1.9l.9-12.6M10 10.5v6.5M14 10.5v6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+export function selection(host, { grid, onDelete, onToggle, onCount }) {
+  const bar = el('div', 'select-bar', `<span class="select-count"></span><button class="select-del" aria-label="Удалить" disabled>${TRASH}</button>`);
+  bar.hidden = true;
+  host.append(bar);
+  const count = bar.querySelector('.select-count');
+  const del = bar.querySelector('.select-del');
+  let popBack = null;
+  let busy = false;
+  grid.onSelect = (n) => {
+    onCount?.(n);
+    if (busy) return;
+    count.textContent = n ? `Выбрано: ${photosCount(n)}` : 'Выберите фото';
+    del.disabled = !n;
+  };
+  const api = {
+    active: false,
+    enter() {
+      if (api.active) return;
+      api.active = true;
+      grid.setSelecting(true);
+      bar.hidden = false;
+      popBack = pushBack(api.exit);
+      onToggle?.(true);
+      haptic('light');
+    },
+    exit() {
+      if (!api.active || busy) return;
+      api.active = false;
+      grid.setSelecting(false);
+      bar.hidden = true;
+      popBack?.();
+      popBack = null;
+      onToggle?.(false);
+    },
+  };
+  del.addEventListener('click', async () => {
+    const list = grid.selectedItems();
+    if (!list.length || busy) return;
+    const ok = await confirmDestructive({
+      title: list.length === 1 ? 'Удалить фото?' : `Удалить ${photosCount(list.length)}?`,
+      message: 'Фото удалятся из галереи и из чата с ботом. Вернуть их будет нельзя.',
+      ok: 'Удалить',
+    });
+    if (!ok) return;
+    busy = true;
+    del.disabled = true;
+    count.textContent = `Удаляю… 0 из ${list.length}`;
+    try {
+      await onDelete(list, (n) => (count.textContent = `Удаляю… ${n} из ${list.length}`));
+    } finally {
+      busy = false;
+      api.exit();
+    }
+  });
+  return api;
 }

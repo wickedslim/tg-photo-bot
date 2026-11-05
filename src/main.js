@@ -111,7 +111,8 @@ async function startLibrary(disk, ns) {
     toast(deletedText(res?.chat));
   }
   // Удалить сразу несколько фото (лишние копии из «Дубликатов»): по одному, потом один раз обновляем ленту.
-  async function removeMany(list) {
+  // onProgress(n) — сколько уже удалено (для надписи «Удаляю… 5 из 40»). Возвращает пути удалённых фото.
+  async function removeMany(list, onProgress) {
     const gone = new Set();
     let kept = 0;
     try {
@@ -120,17 +121,19 @@ async function startLibrary(disk, ns) {
         gone.add(it.p);
         if (res?.chat === 'kept') kept++;
         if (favorites.has(it.p)) favorites.toggle(it.p);
+        onProgress?.(gone.size);
       }
     } catch (e) {
       toast(e?.message || 'Не удалось удалить');
     }
-    if (!gone.size) return;
+    if (!gone.size) return gone;
     all = all.filter((x) => !gone.has(x.p));
     apply();
     const prev = (await loadIndex(ns)) || {};
     await persist(prev.updated || Date.now());
     haptic('medium');
     toast(kept ? `Удалено: ${gone.size}. Не получилось убрать из Telegram ${kept} — это фото, которые вы присылали боту сами больше 48 часов назад: удалите их в чате вручную` : `Удалено: ${gone.size}`);
+    return gone;
   }
 
   const collections = new Collections(tabEl('collections'), {
@@ -138,7 +141,7 @@ async function startLibrary(disk, ns) {
     favorites,
     indexer,
     askName,
-    openPage: (opts) => openPage(tabEl('collections'), { ...opts, loader: thumbs, onOpen: openV }),
+    openPage: (opts) => openPage(tabEl('collections'), { ...opts, loader: thumbs, onOpen: openV, onDeleteMany: removeMany }),
     onDeleteMany: removeMany,
   });
   const search = new Search(tabEl('search'), { loader: thumbs, onOpen: openV, indexer });
@@ -146,6 +149,7 @@ async function startLibrary(disk, ns) {
   const library = new Library(tabEl('library'), {
     loader: thumbs,
     onOpen: openV,
+    onDeleteMany: removeMany,
     onUpload: () => showUploadSheet({ onFiles: (files, mode) => uploader.add(files, mode) }),
     onSettings: () =>
       showSettings({

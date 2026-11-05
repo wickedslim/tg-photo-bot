@@ -1,7 +1,7 @@
 // Медиатека в духе «Фото» на iPhone: «Годы / Месяцы / Все фото», свежие снимки внизу,
 // сетка с виртуальным скроллом и сменой числа колонок щипком.
 import { haptic } from './tg.js';
-import { Grid, el, monthLabel, photosCount, dayLabel } from './grid.js';
+import { Grid, el, monthLabel, photosCount, dayLabel, selection } from './grid.js';
 
 // ── Карточки «Месяцы» и «Годы» ─────────────────────────────────────
 function groupMonths(items) {
@@ -117,7 +117,7 @@ class Cards {
 
 // ── Экран медиатеки целиком ────────────────────────────────────────
 export class Library {
-  constructor(root, { loader, onOpen, onSettings, onUpload }) {
+  constructor(root, { loader, onOpen, onSettings, onUpload, onDeleteMany }) {
     this.root = el('div', 'library');
     this.root.innerHTML = `
       <div class="view view-years scroller"></div>
@@ -128,6 +128,7 @@ export class Library {
         <div class="topbar-text"><div class="topbar-title"></div><div class="topbar-sub"></div></div>
         <div class="topbar-actions">
           <span class="spinner small" hidden></span>
+          <button class="pill" data-act="select">Выбрать</button>
           <button class="pill" data-act="upload">Загрузить</button>
           <button class="pill icon" data-act="settings" aria-label="Настройки">
             <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
@@ -187,6 +188,19 @@ export class Library {
     });
     q('[data-act="settings"]').addEventListener('click', onSettings);
     q('[data-act="upload"]').addEventListener('click', onUpload);
+    this.selBtn = q('[data-act="select"]');
+    this.selBtn.hidden = !onDeleteMany;
+    if (onDeleteMany) {
+      this.select = selection(this.root, {
+        grid: this.grid,
+        onDelete: onDeleteMany,
+        onToggle: (on) => {
+          this.root.classList.toggle('selecting', on);
+          this.selBtn.textContent = on ? 'Отменить' : 'Выбрать';
+        },
+      });
+      this.selBtn.addEventListener('click', () => (this.select.active ? this.select.exit() : this.select.enter()));
+    }
     this.uploadBar = q('.upload-bar');
     // Ширина кнопок может поменяться после первой отрисовки (шрифты, поворот экрана) — двигаем «бегунок» следом.
     new ResizeObserver(() => this.placeThumb()).observe(q('.segmented'));
@@ -200,6 +214,7 @@ export class Library {
     const btns = [...this.root.querySelectorAll('.segmented button')];
     btns.forEach((b) => b.classList.toggle('selected', b.dataset.view === view));
     requestAnimationFrame(() => this.placeThumb());
+    this.root.classList.toggle('on-all', view === 'all'); // «Выбрать» — только в «Все фото»
     if (view === 'all') this.grid.render();
     else {
       this.title.textContent = view === 'years' ? 'Годы' : 'Месяцы';
