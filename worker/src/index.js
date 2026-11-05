@@ -18,7 +18,7 @@
 
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
-import { readExif } from './exif.js';
+import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
 import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew } from './db.js';
 
@@ -383,10 +383,19 @@ async function upload(request, env, url) {
       continue;
     }
     seen.add(hash);
+    const bytes = new Uint8Array(buf, 0, Math.min(buf.byteLength, 16 * 1024 * 1024));
+    // Скриншоты автозагрузка не берёт. Фильтр «Не снимок экрана» в «Командах» на iOS 26 не работает,
+    // поэтому отсеиваем их здесь — по метке «Screenshot», которую iPhone пишет в метаданные.
+    const shot = who.source === 'auto' && isScreenshot(bytes);
+    if (who.source === 'auto') console.log(JSON.stringify({ auto: 1, shot, head: [...bytes.subarray(0, 4)].map((b) => b.toString(16)).join(''), size: buf.byteLength }));
+    if (shot) {
+      skipped++;
+      continue;
+    }
     // Дата и место: что прислало приложение, иначе — из EXIF самого файла (если он его сохранил).
     const m = { ...(meta[i] || {}) };
     if (m.taken == null || m.la == null) {
-      const ex = readExif(new Uint8Array(buf, 0, Math.min(buf.byteLength, 16 * 1024 * 1024)));
+      const ex = readExif(bytes);
       m.taken ??= ex.taken;
       if (m.la == null && ex.la != null) Object.assign(m, { la: ex.la, lo: ex.lo });
     }

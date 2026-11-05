@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { signInitData } from '../worker/src/auth.js';
-import { jpegWithExif } from './exif-fixture.js';
+import { jpegWithExif, jpegScreenshot } from './exif-fixture.js';
 
 const TOKEN = '123456:TEST-token';
 const SECRET = 'hook-secret';
@@ -347,6 +347,22 @@ test('готовая команда: задание от сервера, нас�
   await settings({ archive: false });
   info = await (await api('/api/auto/key', { user: U })).json();
   assert.deepEqual(info.settings, { original: true, archive: false });
+
+  // скриншоты автозагрузка пропускает (метка в EXIF или в XMP), а кнопкой «Загрузить» — можно
+  const shot = (bytes, name) => {
+    const f = new FormData();
+    f.set('file', new File([bytes], name, { type: 'image/jpeg' }));
+    f.set('taken', '2026-10-01T07:00:00Z');
+    return f;
+  };
+  const xmp = new TextEncoder().encode('\xff\xd8<x:xmpmeta><exif:UserComment><rdf:Alt><rdf:li xml:lang="x-default">Screenshot</rdf:li></rdf:Alt></exif:UserComment></x:xmpmeta>');
+  for (const [bytes, name] of [[jpegScreenshot(), 's1.jpg'], [xmp, 's2.jpg']]) {
+    const r = await (await api('/api/upload', { headers: auth, method: 'POST', body: shot(bytes, name) })).json();
+    assert.deepEqual({ n: r.items.length, skipped: r.skipped }, { n: 0, skipped: 1 });
+  }
+  const byHand = new FormData();
+  byHand.set('f0', new File([jpegScreenshot()], 's3.jpg', { type: 'image/jpeg' }));
+  assert.equal((await (await api('/api/upload', { user: U, method: 'POST', body: byHand })).json()).items.length, 1);
 
   // новый ключ не сбрасывает, докуда дошла автозагрузка
   const up = new FormData();

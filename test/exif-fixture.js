@@ -26,3 +26,18 @@ export function jpegWithExif({ date = '2023:07:15 14:30:00', tz = '+03:00', lat 
   const head = [0xff, 0xd8, 0xff, 0xe1, ((tiff.length + 8) >> 8) & 255, (tiff.length + 8) & 255, 0x45, 0x78, 0x69, 0x66, 0, 0];
   return new Uint8Array([...head, ...tiff, 0xff, 0xd9]);
 }
+
+// «JPEG» со скриншота iPhone: в EXIF только UserComment = «Screenshot».
+export function jpegScreenshot() {
+  const t = new DataView(new ArrayBuffer(64));
+  let o = 0;
+  const u16 = (v) => (t.setUint16(o, v), (o += 2));
+  const u32 = (v) => (t.setUint32(o, v), (o += 4));
+  u16(0x4d4d), u16(42), u32(8);
+  u16(1), u16(0x8769), u16(4), u32(1), u32(26), u32(0); // IFD0 → EXIF с 26-го байта
+  u16(1), u16(0x9286), u16(7), u32(18), u32(44), u32(0); // EXIF: UserComment, 18 байт с 44-го
+  [...'ASCII\0\0\0Screenshot'].forEach((c, i) => t.setUint8(44 + i, c.charCodeAt(0)));
+  const tiff = new Uint8Array(t.buffer);
+  const head = [0xff, 0xd8, 0xff, 0xe1, ((tiff.length + 8) >> 8) & 255, (tiff.length + 8) & 255, 0x45, 0x78, 0x69, 0x66, 0, 0];
+  return new Uint8Array([...head, ...tiff, 0xff, 0xd9]);
+}

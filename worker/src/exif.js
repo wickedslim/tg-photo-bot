@@ -65,7 +65,17 @@ function parseTiff(v) {
     const exif = readIfd(u32(exifPtr.at));
     date = str(exif.get(0x9003)) || str(exif.get(0x9004)); // DateTimeOriginal / DateTimeDigitized
     tz = str(exif.get(0x9011)); // OffsetTimeOriginal, например «+03:00»
+    // UserComment: 8 байт — кодировка («ASCII\0\0\0»), дальше текст. iPhone пишет сюда «Screenshot».
+    const uc = exif.get(0x9286);
+    if (uc && uc.type === 7 && uc.count > 8 && uc.count < 512) {
+      const off = u32(uc.at);
+      let c = '';
+      for (let i = 8; i < uc.count; i++) c += String.fromCharCode(v.getUint8(off + i));
+      out.comment = c.replace(/\0+$/, '').trim();
+    }
   }
+  const make = str(ifd0.get(0x010f));
+  if (make) out.make = make.trim();
   date ||= str(ifd0.get(0x0132)); // DateTime
   const m = /^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/.exec(date || '');
   if (m && +m[1] > 1990) {
@@ -94,4 +104,14 @@ function parseTiff(v) {
     }
   }
   return out;
+}
+
+// Скриншот iPhone: в EXIF (или в XMP) у него комментарий «Screenshot». У снимков с камеры его нет.
+const XMP_SHOT = /<exif:UserComment>\s*<rdf:Alt>\s*<rdf:li[^>]*>\s*Screenshot\s*</;
+export function isScreenshot(bytes, ex = readExif(bytes)) {
+  if (/^screenshot$/i.test(ex.comment || '')) return true;
+  const head = bytes.subarray(0, Math.min(bytes.length, 256 * 1024));
+  let text = '';
+  for (let i = 0; i < head.length; i += 8192) text += String.fromCharCode(...head.subarray(i, i + 8192));
+  return XMP_SHOT.test(text);
 }
