@@ -13,6 +13,8 @@ const MAX_PHOTO = 10 * 1024 * 1024;
 const MAX_DOC = 50 * 1024 * 1024;
 const PHOTO_SIDE = 2560;
 const THUMB_SIDE = 320;
+export const PREVIEW_FROM = 1024 * 1024; // оригиналам меньше мегабайта лёгкая копия не нужна
+const MAX_PREVIEW = 5 * 1024 * 1024;
 const MODE_KEY = 'upload-mode';
 
 export const getMode = () => (localStorage.getItem(MODE_KEY) === 'doc' ? 'doc' : 'photo');
@@ -111,15 +113,21 @@ async function prepare(file, mode) {
   if (file.size > MAX_DOC) throw new Error(`«${file.name}» больше 50 МБ — Telegram такие файлы от ботов не принимает`);
   const bmp = await decode(file);
   let thumb = null;
+  let preview = null;
   const meta = { taken, ...geo };
   if (bmp) {
     meta.w = bmp.width;
     meta.h = bmp.height;
     const t = await toJpeg(bmp, THUMB_SIDE, 0.8);
-    bmp.close();
     if (t && t.size <= 200 * 1024) thumb = t;
+    // Лёгкая копия для просмотра: оригинал в несколько мегабайт открывался бы долго (HEIC — особенно).
+    if (file.size > PREVIEW_FROM) {
+      const v = await toJpeg(bmp, PHOTO_SIDE, 0.85);
+      if (v && v.size <= MAX_PREVIEW && v.size < file.size) preview = v;
+    }
+    bmp.close();
   }
-  return { mode: 'doc', file, thumb, meta };
+  return { mode: 'doc', file, thumb, preview, meta };
 }
 
 // ── Очередь ──
@@ -163,7 +171,7 @@ export class Uploader {
         this.toast(e.message);
         continue;
       }
-      const size = p.file.size + (p.thumb?.size || 0);
+      const size = p.file.size + (p.thumb?.size || 0) + (p.preview?.size || 0);
       if (batch.length && (p.mode !== batch[0].mode || bytes + size > BATCH_BYTES)) break;
       this.queue.shift();
       batch.push(p);
@@ -195,6 +203,7 @@ export class Uploader {
     batch.forEach((p, i) => {
       form.set('f' + i, p.file, p.file.name);
       if (p.thumb) form.set('t' + i, p.thumb, `t${i}.jpg`);
+      if (p.preview) form.set('v' + i, p.preview, `v${i}.jpg`);
     });
     for (let attempt = 0; ; attempt++) {
       try {

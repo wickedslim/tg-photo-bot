@@ -58,6 +58,7 @@ export class MockDisk {
         const name = `IMG_${String(4000 + i).padStart(4, '0')}.jpg`;
         // В u храним номер снимка на picsum и его размеры (список фото кэшируется между запусками)
         const it = { p: `disk:/${folder}/${name}`, n: name, u: `${p.id}:${p.width}:${p.height}`, t, s: 1500000 + Math.floor(rand() * 3000000) };
+        if (i % 7 === 0) it.k = 'd'; // каждое седьмое — «оригинал файлом»
         if (trip) Object.assign(it, { la: trip.la + rand() * 0.05, lo: trip.lo + rand() * 0.05 });
         else if (rand() < 0.6) Object.assign(it, { la: 55.75 + rand() * 0.05, lo: 37.6 + rand() * 0.05 });
         items.push(it);
@@ -107,6 +108,12 @@ export class MockDisk {
     this.local.delete(item.i);
     await new Promise((r) => setTimeout(r, 300));
     return { ok: true, chat: 'deleted' };
+  }
+
+  // Лёгкая копия оригинала — в демо просто запоминаем, что её «отправили».
+  async savePreview(item, blob, w, h) {
+    (this.previews ||= []).push({ p: item.p, size: blob.size, w, h });
+    return { i: item.i, k: 'd', v: 1, w, h };
   }
 
   async autoKeyInfo() {

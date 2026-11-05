@@ -74,10 +74,16 @@ async function startLibrary(disk, ns) {
   showTab('library');
 
   const indexer = new Indexer({ ns, disk, store });
-  if (import.meta.env.DEV) window.__ix = indexer; // для отладки в браузере
+  if (import.meta.env.DEV) Object.assign(window, { __ix: indexer, __disk: disk }); // для отладки в браузере
   const askName = (current) =>
     askText({ title: current ? 'Изменить имя' : 'Кто это?', message: 'Если дать двум карточкам одно имя, они объединятся.', value: current, placeholder: 'Имя' });
-  const openV = (items, index, host) => openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete: removeItem });
+  const openV = (items, index, host) => openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete: removeItem, onUpdate: saveUpdated });
+
+  // У фото появилась лёгкая копия (или размеры) — запоминаем список, чтобы это пережило перезапуск.
+  async function saveUpdated() {
+    const prev = (await loadIndex(ns)) || {};
+    await persist(prev.updated || Date.now());
+  }
 
   // Удаление: сервер убирает фото из базы и (если Telegram разрешит) из чата, мы — из ленты и избранного.
   async function removeItem(it) {

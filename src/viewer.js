@@ -6,6 +6,7 @@ import 'photoswipe/style.css';
 import { pushBack, openExternal, haptic, downloadViaTelegram, confirmDestructive } from './tg.js';
 import { isAbort } from './api.js';
 import { dayLabel } from './grid.js';
+import { PREVIEW_FROM } from './upload.js';
 
 const BIG = 'XXXL';
 const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -27,7 +28,10 @@ const ICONS = {
 };
 
 // host — сетка, из которой открыли фото: даёт миниатюру для анимации и прокручивается вслед за листанием.
-export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete }) {
+// Оригиналы, для которых лёгкая копия уже отправляется (общий список на все открытия просмотра).
+const makingPreview = new Set();
+
+export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete, onUpdate }) {
   // Пропорции фото: из загруженной картинки, иначе — из размеров, которые знает сервер.
   const ratioOf = (it) => {
     const d = bigs.dims.get(it.p) || thumbs.dims.get(it.p);
@@ -52,7 +56,12 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
             img.onload = () => {
               bigs.noteDims(it, img);
               // Раскодируем заранее: тогда подмена миниатюры на большое фото происходит мгновенно, без мигания.
-              (img.decode ? img.decode() : Promise.resolve()).catch(() => {}).then(resolve);
+              (img.decode ? img.decode() : Promise.resolve())
+                .catch(() => {})
+                .then(() => {
+                  makePreview(it, img);
+                  resolve();
+                });
             };
             img.onerror = () => {
               undecodable.add(it.p);
@@ -82,9 +91,39 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
       );
   }
 
+  // Оригинал открыли впервые: он скачан целиком (это и было долго). Делаем из него JPEG до 2560 px
+  // и отправляем на сервер — в следующий раз фото откроется так же быстро, как обычное.
+  function makePreview(it, img) {
+    if (it.k !== 'd' || it.v || !disk.savePreview || makingPreview.has(it.p) || !img.naturalWidth) return;
+    if (it.s && it.s < PREVIEW_FROM) return;
+    makingPreview.add(it.p);
+    setTimeout(async () => {
+      try {
+        const k = Math.min(1, 2560 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+        c.width = c.height = 0;
+        if (!blob) return;
+        const saved = await disk.savePreview(it, blob, img.naturalWidth, img.naturalHeight);
+        it.v = 1;
+        if (saved?.w && !it.w) Object.assign(it, { w: saved.w, h: saved.h });
+        onUpdate?.(it);
+      } catch {
+        // Не вышло (нет сети, Telegram занят) — попробуем, когда фото откроют снова.
+      } finally {
+        makingPreview.delete(it.p);
+      }
+    }, 400);
+  }
+
   function ensureThumb(it, i) {
     if (thumbs.peekAny(it, ['XL', 'L', 'M', 'S'])) return;
-    const job = thumbs.load(it, 'L');
+    // У оригинала без лёгкой копии «средний» размер — это сам оригинал: его уже качает ensureBig,
+    // поэтому здесь берём только обложку, иначе тяжёлый файл скачивался бы дважды.
+    const job = thumbs.load(it, it.k === 'd' && !it.v ? 'M' : 'L');
     job.promise.then((url) => {
       const img = new Image();
       img.onload = () => {
@@ -223,7 +262,10 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
     fetch(url)
       .then((r) => r.blob())
       .then((b) => {
-        const f = new File([b], it.n.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+        // До появления лёгкой копии у оригинала здесь сам файл (например, HEIC) — сохраняем его тип.
+        const type = b.type && b.type.startsWith('image/') ? b.type : 'image/jpeg';
+        const ext = { 'image/heic': '.heic', 'image/heif': '.heif', 'image/png': '.png', 'image/webp': '.webp' }[type] || '.jpg';
+        const f = new File([b], it.n.replace(/\.[^.]+$/, '') + ext, { type });
         if (navigator.canShare({ files: [f] })) shareFile = { p: it.p, file: f };
       })
       .catch(() => {})

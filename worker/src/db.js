@@ -3,14 +3,20 @@
 
 const COLS = ['user_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon'];
 
+// pv — у оригинала (фото файлом) есть лёгкая копия для просмотра. Если правят подпись сообщения
+// с тем же файлом (вебхук edited_message), копия сохраняется.
+const ITEM_COLS = "id, date, taken, kind, width, height, size, name, caption, source, lat, lon, (kind = 'doc' AND large_id <> orig_id) AS pv";
+
 const UPSERT = `INSERT INTO photos (${COLS.join(', ')}) VALUES (${COLS.map(() => '?').join(', ')})
   ON CONFLICT (user_id, message_id) DO UPDATE SET
     kind = excluded.kind, size = excluded.size, name = excluded.name, mime = excluded.mime, caption = excluded.caption,
     width = COALESCE(excluded.width, photos.width), height = COALESCE(excluded.height, photos.height),
     taken = COALESCE(excluded.taken, photos.taken), lat = COALESCE(excluded.lat, photos.lat), lon = COALESCE(excluded.lon, photos.lon),
-    thumb_id = excluded.thumb_id, medium_id = excluded.medium_id, large_id = excluded.large_id, orig_id = excluded.orig_id,
-    sizes = excluded.sizes, hash = COALESCE(excluded.hash, photos.hash)
-  RETURNING id, date, taken, kind, width, height, size, name, caption, source, lat, lon`;
+    thumb_id = CASE WHEN excluded.thumb_id = excluded.orig_id AND photos.orig_id = excluded.orig_id THEN photos.thumb_id ELSE excluded.thumb_id END,
+    medium_id = CASE WHEN excluded.kind = 'doc' AND photos.orig_id = excluded.orig_id THEN photos.medium_id ELSE excluded.medium_id END,
+    large_id = CASE WHEN excluded.kind = 'doc' AND photos.orig_id = excluded.orig_id THEN photos.large_id ELSE excluded.large_id END,
+    orig_id = excluded.orig_id, sizes = excluded.sizes, hash = COALESCE(excluded.hash, photos.hash)
+  RETURNING ${ITEM_COLS}`;
 
 export function upsertStmt(db, userId, rec) {
   const row = { ...rec, user_id: userId };
@@ -33,7 +39,7 @@ export async function savePhotos(db, userId, recs) {
 
 export async function listPhotos(db, userId, { after = 0, limit = 2000 } = {}) {
   const { results } = await db
-    .prepare('SELECT id, date, taken, kind, width, height, size, name, caption, source, lat, lon FROM photos WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?')
+    .prepare(`SELECT ${ITEM_COLS} FROM photos WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?`)
     .bind(userId, after, limit)
     .all();
   return results;
@@ -55,6 +61,7 @@ export function toItem(r) {
   if (r.name) it.n = r.name;
   if (r.caption) it.c = r.caption;
   if (r.source && r.source !== 'chat') it.o = r.source;
+  if (r.pv) it.v = 1;
   if (r.lat != null && r.lon != null) {
     it.la = r.lat;
     it.lo = r.lon;
@@ -111,4 +118,17 @@ export async function hasTakenAt(db, userId, taken, withArchive = false) {
   const s = Math.floor(taken / 1000) * 1000;
   const sql = 'SELECT 1 FROM photos WHERE user_id = ? AND taken >= ? AND taken < ?' + (withArchive ? '' : " AND source <> 'archive'");
   return Boolean(await db.prepare(sql).bind(userId, s, s + 1000).first());
+}
+
+// Лёгкая копия оригинала для просмотра: её размеры (из сжатого фото Telegram) — вместо оригинала.
+// Обложку заменяем, только если своей у файла не было (например, HEIC: тогда обложкой был сам файл).
+export function setPreview(db, userId, id, { thumb_id, medium_id, large_id, width, height }) {
+  return db
+    .prepare(
+      `UPDATE photos SET thumb_id = CASE WHEN thumb_id = orig_id THEN ? ELSE thumb_id END, medium_id = ?, large_id = ?,
+         width = COALESCE(width, ?), height = COALESCE(height, ?)
+       WHERE id = ? AND user_id = ? AND kind = 'doc' RETURNING ${ITEM_COLS}`,
+    )
+    .bind(thumb_id, medium_id, large_id, width ?? null, height ?? null, id, userId)
+    .first();
 }

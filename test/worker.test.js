@@ -237,7 +237,7 @@ test('ключ автозагрузки: загружает только в св
 });
 
 test('архив: от старых фото к новым, без повторов, до момента создания ключа', async () => {
-  const U = 444;
+  const U = 555;
   const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
   const auth = { authorization: 'Key ' + created.key };
   const since = async () => (await api('/api/auto/archive', { headers: auth })).text();
@@ -331,6 +331,73 @@ test('HEIC с iPhone из «Быстрой команды» без конвер�
   assert.equal(it.o, 'auto');
   // и курсор автозагрузки сдвинулся на дату этого снимка
   assert.equal(await (await api('/api/auto/since', { headers: { authorization: 'Key ' + key } })).text(), '2023-07-15T11:29:59Z');
+});
+
+test('лёгкая копия оригинала: открывается быстро, оригинал остаётся, в чате нет дублей', async () => {
+  const P = 666;
+  const doc = (extra = {}) => ({
+    update_id: 700,
+    message: { message_id: 700, date: 1700000000, from: { id: P, first_name: 'T' }, chat: { id: P, type: 'private' }, document: { file_id: 'heicdoc', file_unique_id: 'hu', file_name: 'IMG_7.HEIC', mime_type: 'image/heic', file_size: 2800000 }, ...extra },
+  });
+  await hook(doc());
+  let list = await listOf(P);
+  const it = list.items[0];
+  assert.equal(it.k, 'd');
+  assert.equal(it.v, undefined);
+  const getFile = async (size, token = list.fileToken) => (await mf.dispatchFetch(`http://worker/api/file/${it.i}?s=${size}&k=${encodeURIComponent(token)}`)).text();
+  assert.equal(await getFile('large'), 'IMG:photos/heicdoc.jpg'); // пока копии нет — сам оригинал
+
+  const preview = () => {
+    const f = new FormData();
+    f.set('file', new File(['jpeg-preview'], 'preview.jpg', { type: 'image/jpeg' }));
+    f.set('w', '4032');
+    f.set('h', '3024');
+    return f;
+  };
+  // чужое фото — как несуществующее
+  assert.equal((await api(`/api/photo/${it.i}/preview`, { user: A, method: 'POST', body: preview() })).status, 404);
+
+  sent.length = 0;
+  const r = await api(`/api/photo/${it.i}/preview`, { user: P, method: 'POST', body: preview() });
+  assert.equal(r.status, 200, await r.clone().text());
+  const saved = (await r.json()).item;
+  assert.equal(saved.v, 1);
+  assert.deepEqual([saved.w, saved.h], [4032, 3024]);
+  // копия ушла сжатым фото и сразу удалена из чата
+  assert.deepEqual(sent.map((x) => x.method), ['sendPhoto', 'deleteMessage']);
+
+  list = await listOf(P);
+  assert.equal(list.items[0].v, 1);
+  assert.match(await getFile('large'), /^IMG:photos\/p\d+_y\.jpg$/);
+  assert.match(await getFile('thumb'), /^IMG:photos\/p\d+_/); // своей обложки у HEIC не было — взяли из копии
+  assert.equal(await getFile('orig'), 'IMG:photos/heicdoc.jpg');
+
+  // второй раз не отправляется
+  sent.length = 0;
+  assert.equal((await (await api(`/api/photo/${it.i}/preview`, { user: P, method: 'POST', body: preview() })).json()).item, null);
+  assert.equal(sent.length, 0);
+  // правка подписи в чате копию не сбрасывает
+  await hook({ update_id: 701, edited_message: { ...doc().message, caption: 'море' } });
+  list = await listOf(P);
+  assert.equal(list.items[0].v, 1);
+  assert.equal(list.items[0].c, 'море');
+
+  // сжатому фото копия не нужна
+  await hook(photoMsg(P, 702));
+  const photoId = (await listOf(P)).items.find((x) => x.k === 'p').i;
+  assert.equal((await api(`/api/photo/${photoId}/preview`, { user: P, method: 'POST', body: preview() })).status, 400);
+
+  // «Загрузить» оригиналом: копия прикрепляется сразу
+  sent.length = 0;
+  const up = new FormData();
+  up.set('mode', 'doc');
+  up.set('f0', new File(['orig-bytes-2'], 'IMG_8.HEIC', { type: 'image/heic' }));
+  up.set('v0', new File(['jpeg-2'], 'v0.jpg', { type: 'image/jpeg' }));
+  up.set('meta', JSON.stringify([{ taken: Date.parse('2024-01-01T10:00:00Z'), w: 3024, h: 4032 }]));
+  const ur = await (await api('/api/upload', { user: P, method: 'POST', body: up })).json();
+  assert.equal(ur.items[0].v, 1);
+  assert.deepEqual([ur.items[0].w, ur.items[0].h], [3024, 4032]);
+  assert.deepEqual(sent.map((x) => x.method), ['sendDocument', 'sendPhoto', 'deleteMessage']);
 });
 
 test('удаление: своё — из галереи и из чата, чужое — нельзя, старое сообщение — только из галереи', async () => {

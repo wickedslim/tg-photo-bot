@@ -5,6 +5,7 @@
 //   POST /api/upload      — загрузить фото из приложения в чат пользователя с ботом
 //   GET  /api/file/:id    — скачать фото (только владельцу); токен бота наружу не попадает
 //   DELETE /api/photo/:id — удалить фото из галереи (и сообщение из чата, если Telegram разрешит)
+//   POST /api/photo/:id/preview — лёгкая копия оригинала для быстрого просмотра (делает приложение)
 //   GET/POST/DELETE /api/auto/key — личный ключ автозагрузки (создать, узнать, отключить)
 //   GET  /api/auto/since  — с какой даты съёмки «Быстрой команде» искать новые фото
 //   GET  /api/auto/archive — то же для команды «Архив» (старые фото, от самых старых к новым)
@@ -16,11 +17,12 @@
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
 const MAX_THUMB = 200 * 1024; // обложка документа: JPEG до 200 КБ и 320 px
+const MAX_PREVIEW = 5 * 1024 * 1024; // лёгкая копия оригинала: JPEG до 2560 px
 const SIZES = new Set(['thumb', 'medium', 'large', 'orig']);
 
 export default {
@@ -61,6 +63,8 @@ async function route(request, env, ctx) {
   if (pathname === '/api/auto/key') return autoKey(request, env, url);
   if (pathname === '/api/auto/since' && request.method === 'GET') return autoSince(request, env);
   if (pathname === '/api/auto/archive' && request.method === 'GET') return archiveSince(request, env);
+  const pv = /^\/api\/photo\/(\d{1,15})\/preview$/.exec(pathname);
+  if (pv && request.method === 'POST') return previewRoute(request, env, Number(pv[1]));
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
   if (del && request.method === 'DELETE') return removePhoto(request, env, Number(del[1]));
   const m = /^\/api\/file\/(\d{1,15})$/.exec(pathname);
@@ -293,6 +297,7 @@ async function upload(request, env, url) {
     if (f.size > limit) throw new HttpError(413, 'too_big', `«${name}» больше ${limit / 1024 / 1024} МБ`);
     let thumb = asDoc ? (form.get('t' + i) ?? (i === 0 ? form.get('thumb') : null)) : null;
     if (thumb && (typeof thumb === 'string' || !thumb.size || thumb.size > MAX_THUMB)) thumb = null;
+    const preview = asDoc ? validPreview(form.get('v' + i) ?? (i === 0 ? form.get('preview') : null)) : null;
     // Одно и то же фото дважды не загружаем: автозагрузка может прислать его повторно.
     const buf = await f.arrayBuffer();
     const hash = await sha256(buf);
@@ -308,7 +313,7 @@ async function upload(request, env, url) {
       m.taken ??= ex.taken;
       if (m.la == null && ex.la != null) Object.assign(m, { la: ex.la, lo: ex.lo });
     }
-    files.push({ f, name, thumb, hash, meta: m });
+    files.push({ f, name, thumb, preview, hash, meta: m });
   }
   if (!files.length && !skipped) throw new HttpError(400, 'bad_request', 'Нет файлов');
   const takenOf = (m) => num(m.taken, Date.UTC(1990, 0, 1), now + 86400000);
@@ -354,6 +359,7 @@ async function upload(request, env, url) {
   }
   const messages = Array.isArray(result) ? result : [result];
   const recs = [];
+  const previews = [];
   messages.forEach((msg, i) => {
     const rec = extractPhoto(msg);
     const src = files[i];
@@ -368,11 +374,78 @@ async function upload(request, env, url) {
       rec.height = num(src.meta.h, 1, 100000);
     }
     recs.push(rec);
+    previews.push(src.preview);
   });
   const rows = await savePhotos(env.DB, uid, recs);
+  // Оригиналы с лёгкой копией от приложения: сразу прикрепляем копию, чтобы фото быстро открывалось.
+  // Telegram попросил подождать — не страшно: копию сделает просмотр, когда фото откроют.
+  for (let k = 0; k < rows.length; k++) {
+    if (!previews[k] || rows[k].kind !== 'doc') continue;
+    try {
+      rows[k] = (await attachPreview(env, uid, rows[k].id, previews[k], files[k]?.meta)) || rows[k];
+    } catch (e) {
+      if (e instanceof TgError) break;
+      throw e;
+    }
+  }
   if (archive) await touchArchive(env.DB, uid, now, archiveAt);
   else if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...recs.map((r) => r.taken || 0)));
   return json(request, env, { ok: true, items: rows.map(toItem), skipped });
+}
+
+function validPreview(v) {
+  if (!v || typeof v === 'string' || !v.size || v.size > MAX_PREVIEW) return null;
+  return v.type && v.type !== 'image/jpeg' ? null : v;
+}
+
+// Лёгкая копия оригинала. Telegram хранит у сжатого фото готовые размеры (320, 800 … 2560 px) —
+// отправляем копию как фото, запоминаем эти размеры и сразу удаляем сообщение, чтобы в чате не было дублей.
+// Если когда-нибудь копия станет недоступна, просмотр вернётся к оригиналу (см. file()).
+async function attachPreview(env, uid, id, blob, meta = {}) {
+  const fd = new FormData();
+  fd.set('chat_id', String(uid));
+  fd.set('disable_notification', 'true');
+  fd.set('photo', blob, 'preview.jpg');
+  const msg = await callApi(env.BOT_TOKEN, 'sendPhoto', fd, { waitUpTo: 3 });
+  const rec = extractPhoto(msg);
+  if (!rec || rec.kind !== 'photo') return null;
+  const row = await setPreview(env.DB, uid, id, {
+    thumb_id: rec.thumb_id,
+    medium_id: rec.medium_id,
+    large_id: rec.large_id,
+    width: num(meta.w, 1, 100000) ?? rec.width,
+    height: num(meta.h, 1, 100000) ?? rec.height,
+  });
+  try {
+    await callApi(env.BOT_TOKEN, 'deleteMessage', { chat_id: uid, message_id: msg.message_id }, { waitUpTo: 2 });
+  } catch {}
+  return row;
+}
+
+async function previewRoute(request, env, id) {
+  const uid = await authUser(request, env);
+  const row = await env.DB.prepare('SELECT kind, large_id, orig_id FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
+  if (!row) throw new HttpError(404, 'not_found', 'Фото не найдено');
+  if (row.kind !== 'doc') throw new HttpError(400, 'bad_request', 'Копия нужна только оригиналам');
+  // Уже есть — второй раз не отправляем (например, фото открыли на двух устройствах сразу).
+  if (row.large_id !== row.orig_id) return json(request, env, { ok: true, item: null });
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    throw new HttpError(400, 'bad_request', 'Не удалось прочитать файл');
+  }
+  const blob = validPreview(form.get('file'));
+  if (!blob) throw new HttpError(400, 'bad_request', 'Нужен JPEG до 5 МБ');
+  let saved;
+  try {
+    saved = await attachPreview(env, uid, id, blob, { w: form.get('w'), h: form.get('h') });
+  } catch (e) {
+    if (!(e instanceof TgError)) throw e;
+    if (e.status === 429) throw new HttpError(429, 'rate', 'Telegram просит подождать', { retry_after: e.retryAfter || 5 });
+    throw new HttpError(502, 'tg', 'Telegram не принял копию');
+  }
+  return json(request, env, { ok: true, item: saved ? toItem(saved) : null });
 }
 
 async function sha256(data) {
@@ -478,21 +551,29 @@ async function file(request, env, url, id) {
     isOrig = false;
   }
 
-  let upstream;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let path;
-    try {
-      path = await filePath(env.BOT_TOKEN, fileId);
-    } catch (e) {
-      if (e instanceof TgError && e.status === 429) throw new HttpError(429, 'rate', 'Telegram просит подождать', { retry_after: e.retryAfter || 3 });
-      if (e instanceof TgError) throw new HttpError(502, 'tg', 'Telegram не отдал файл');
-      throw e;
+  const fetchFile = async (id) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let path;
+      try {
+        path = await filePath(env.BOT_TOKEN, id);
+      } catch (e) {
+        if (e instanceof TgError && e.status === 429) throw new HttpError(429, 'rate', 'Telegram просит подождать', { retry_after: e.retryAfter || 3 });
+        if (e instanceof TgError) return null;
+        throw e;
+      }
+      const r = await downloadFile(env.BOT_TOKEN, path);
+      if (r.ok) return r;
+      forgetPath(id);
     }
-    upstream = await downloadFile(env.BOT_TOKEN, path);
-    if (upstream.ok) break;
-    forgetPath(fileId);
+    return null;
+  };
+  let upstream = await fetchFile(fileId);
+  // Лёгкая копия оригинала пропала у Telegram — показываем сам оригинал (если он не больше 20 МБ).
+  if (!upstream && row.kind === 'doc' && fileId !== row.orig_id && (!row.size || row.size <= MAX_DOWNLOAD)) {
+    upstream = await fetchFile(row.orig_id);
+    isOrig = true;
   }
-  if (!upstream.ok) throw new HttpError(502, 'tg', 'Telegram не отдал файл');
+  if (!upstream) throw new HttpError(502, 'tg', 'Telegram не отдал файл');
 
   let type = 'image/jpeg';
   if (isOrig) type = row.mime && row.mime.startsWith('image/') ? row.mime : 'application/octet-stream';

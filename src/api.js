@@ -137,6 +137,18 @@ export class Api {
     return this.req(`/api/photo/${item.i}`, { method: 'DELETE' });
   }
 
+  // Лёгкая копия оригинала (JPEG до 2560 px), чтобы он дальше открывался так же быстро, как обычное фото.
+  async savePreview(item, blob, w, h) {
+    const form = new FormData();
+    form.set('file', blob, 'preview.jpg');
+    if (w && h) {
+      form.set('w', String(w));
+      form.set('h', String(h));
+    }
+    const res = await this.req(`/api/photo/${item.i}/preview`, { method: 'POST', body: form });
+    return res.item;
+  }
+
   // Ключ автозагрузки для «Быстрых команд».
   autoKeyInfo() {
     return this.req('/api/auto/key');
