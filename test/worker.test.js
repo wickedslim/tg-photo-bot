@@ -382,6 +382,16 @@ test('лёгкая копия оригинала: открывается быс�
   assert.equal(list.items[0].v, 1);
   assert.equal(list.items[0].c, 'море');
 
+  // у оригинала с обложкой от Telegram «средний» размер — обложка, а не сам файл (сетка не качает мегабайты)
+  await hook({
+    update_id: 703,
+    message: { message_id: 703, date: 1700000000, from: { id: P, first_name: 'T' }, chat: { id: P, type: 'private' }, document: { file_id: 'jpgdoc', file_unique_id: 'ju', file_name: 'IMG_9.JPG', mime_type: 'image/jpeg', file_size: 4000000, thumbnail: { file_id: 'jpgcover', file_unique_id: 'jc', width: 320, height: 240 } } },
+  });
+  list = await listOf(P);
+  const withCover = list.items.find((x) => x.n === 'IMG_9.JPG');
+  const medium = await (await mf.dispatchFetch(`http://worker/api/file/${withCover.i}?s=medium&k=${encodeURIComponent(list.fileToken)}`)).text();
+  assert.equal(medium, 'IMG:photos/jpgcover.jpg');
+
   // сжатому фото копия не нужна
   await hook(photoMsg(P, 702));
   const photoId = (await listOf(P)).items.find((x) => x.k === 'p').i;

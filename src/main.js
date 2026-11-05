@@ -14,6 +14,9 @@ import { showUploadSheet, Uploader } from './upload.js';
 import { Indexer } from './ml/indexer.js';
 
 const FULL_REFRESH_MS = 24 * 3600 * 1000;
+// Меняется, когда список фото с сервера получает новые поля: сохранённый на телефоне список
+// старой версии один раз загружается заново целиком. 2 — флаг лёгкой копии у оригиналов (v).
+const INDEX_VER = 2;
 const app = document.getElementById('app');
 
 initTelegram();
@@ -134,7 +137,7 @@ async function startLibrary(disk, ns) {
       }),
   });
 
-  const persist = (updated) => disk.kind === 'mock' || saveIndex(ns, { items: all, updated });
+  const persist = (updated) => disk.kind === 'mock' || saveIndex(ns, { items: all, updated, ver: INDEX_VER });
   const setAll = (items) => {
     items.sort((a, b) => a.t - b.t || a.i - b.i);
     all = items;
@@ -187,7 +190,7 @@ async function startLibrary(disk, ns) {
   const cached = disk.kind === 'mock' ? null : await loadIndex(ns);
   if (cached?.items?.length) {
     setAll(cached.items);
-    refresh(Date.now() - (cached.updated || 0) > FULL_REFRESH_MS);
+    refresh(cached.ver !== INDEX_VER || Date.now() - (cached.updated || 0) > FULL_REFRESH_MS);
   } else {
     refresh(true);
   }

@@ -18,8 +18,10 @@ export class PreviewLoader {
   }
 
   // S и M (как и L и XL) в Telegram — один и тот же файл: не качаем и не храним его дважды.
+  // У оригинала (фото файлом) с лёгкой копией «средний» и «большой» размеры — уже копия, а не сам файл:
+  // отдельный ключ, чтобы не показывать из кэша тяжёлый оригинал, скачанный до появления копии.
   key(item, size) {
-    return (this.disk.sizeKey?.(size) || size) + '|' + item.p;
+    return (this.disk.sizeKey?.(size) || size) + '|' + item.p + (item.k === 'd' && item.v ? '|v' : '');
   }
 
   peek(item, size) {

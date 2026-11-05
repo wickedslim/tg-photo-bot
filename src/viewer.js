@@ -94,7 +94,7 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
   // Оригинал открыли впервые: он скачан целиком (это и было долго). Делаем из него JPEG до 2560 px
   // и отправляем на сервер — в следующий раз фото откроется так же быстро, как обычное.
   function makePreview(it, img) {
-    if (it.k !== 'd' || it.v || !disk.savePreview || makingPreview.has(it.p) || !img.naturalWidth) return;
+    if (it.k !== 'd' || it.v || it.vp || !disk.savePreview || makingPreview.has(it.p) || !img.naturalWidth) return;
     if (it.s && it.s < PREVIEW_FROM) return;
     makingPreview.add(it.p);
     setTimeout(async () => {
@@ -108,7 +108,9 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
         c.width = c.height = 0;
         if (!blob) return;
         const saved = await disk.savePreview(it, blob, img.naturalWidth, img.naturalHeight);
-        it.v = 1;
+        // Копия на сервере есть. Флаг v придёт со списком фото при следующем полном обновлении —
+        // до этого кэш живёт по старым ключам, и уже скачанный оригинал не качается заново.
+        it.vp = 1;
         if (saved?.w && !it.w) Object.assign(it, { w: saved.w, h: saved.h });
         onUpdate?.(it);
       } catch {

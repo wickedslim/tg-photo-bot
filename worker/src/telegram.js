@@ -123,7 +123,9 @@ export function extractPhoto(msg) {
       name: doc.file_name ? String(doc.file_name).slice(0, 255) : null,
       mime: doc.mime_type || null,
       thumb_id: thumb ? thumb.file_id : doc.file_id,
-      medium_id: doc.file_id,
+      // Средний размер — обложка: сетке не нужен оригинал в несколько мегабайт. Когда появится
+      // лёгкая копия для просмотра (см. setPreview), средний и большой размеры возьмутся из неё.
+      medium_id: thumb ? thumb.file_id : doc.file_id,
       large_id: doc.file_id,
       orig_id: doc.file_id,
       sizes: JSON.stringify(sizes),
