@@ -28,9 +28,11 @@ const ICONS = {
 
 // host — сетка, из которой открыли фото: даёт миниатюру для анимации и прокручивается вслед за листанием.
 export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete }) {
+  // Пропорции фото: из загруженной картинки, иначе — из размеров, которые знает сервер.
   const ratioOf = (it) => {
     const d = bigs.dims.get(it.p) || thumbs.dims.get(it.p);
-    return d ? d[0] / d[1] : null;
+    if (d) return d[0] / d[1];
+    return it.w && it.h ? it.w / it.h : null;
   };
   let pswp;
   let destroyed = false;
@@ -49,7 +51,8 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
             const img = new Image();
             img.onload = () => {
               bigs.noteDims(it, img);
-              resolve();
+              // Раскодируем заранее: тогда подмена миниатюры на большое фото происходит мгновенно, без мигания.
+              (img.decode ? img.decode() : Promise.resolve()).catch(() => {}).then(resolve);
             };
             img.onerror = () => {
               undecodable.add(it.p);
@@ -62,7 +65,7 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
         () => {
           loading.delete(i);
           if (!destroyed) {
-            pswp.refreshSlideContent(i);
+            upgrade(i);
             if (pswp.currIndex === i) {
               updateLoading();
               prepareShare(it);
@@ -86,10 +89,36 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
       const img = new Image();
       img.onload = () => {
         thumbs.noteDims(it, img);
-        if (!destroyed && !bigs.peek(it, BIG)) pswp.refreshSlideContent(i);
+        if (!destroyed && !bigs.peek(it, BIG)) upgrade(i);
       };
       img.src = url;
     }, () => {});
+  }
+
+  // Загрузилась картинка получше (большое фото вместо миниатюры). Если форма та же, просто меняем
+  // картинку на месте: без пересоздания слайда нет скачка. Пересоздаём, только если поменялись пропорции,
+  // и не во время анимации открытия: иначе фото дёргается посреди увеличения.
+  const deferred = new Set();
+  function upgrade(i) {
+    const slide = pswp.mainScroll?.itemHolders.find((h) => h.slide?.index === i)?.slide;
+    if (!slide) return; // слайда нет на экране — нужная картинка подставится, когда до него долистают
+    const it = items[i];
+    const url = (!undecodable.has(it.p) && bigs.peek(it, BIG)) || thumbs.peekAny(it, ['XL', 'L', 'M', 'S']);
+    const img = slide.content?.element;
+    const r = ratioOf(it);
+    const sameShape = r && slide.width && slide.height && Math.abs(r / (slide.width / slide.height) - 1) < 0.02;
+    if (url && img?.tagName === 'IMG' && sameShape && slide.content.state === 'loaded') {
+      if (img.getAttribute('src') !== url) {
+        img.src = url;
+        slide.data.src = url;
+      }
+      return;
+    }
+    if (!pswp.opener.isOpen) {
+      deferred.add(i);
+      return;
+    }
+    pswp.refreshSlideContent(i);
   }
 
   const options = {
@@ -119,7 +148,7 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
     const big = undecodable.has(it.p) ? null : bigs.peek(it, BIG);
     const thumb = thumbs.peekAny(it, ['XL', 'L', 'M', 'S']);
     const r = ratioOf(it) || 4 / 3;
-    const d = bigs.dims.get(it.p);
+    const d = bigs.dims.get(it.p) || (it.w && it.h && Math.abs(it.w / it.h / r - 1) < 0.02 ? [it.w, it.h] : null);
     const width = d ? d[0] : r >= 1 ? 1600 : Math.round(1600 * r);
     const height = d ? d[1] : r >= 1 ? Math.round(1600 / r) : 1600;
     if (!big && !undecodable.has(it.p)) ensureBig(it, i);
@@ -281,9 +310,18 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
     updateLoading();
   }
 
+  // «change» приходит и при пересоздании текущего слайда — сетку под просмотром двигаем, только когда фото сменилось.
+  let shown = index;
   pswp.on('change', () => {
     updateBars();
-    host.revealIndex(pswp.currIndex);
+    if (pswp.currIndex !== shown) {
+      shown = pswp.currIndex;
+      host.revealIndex(shown);
+    }
+  });
+  pswp.on('openingAnimationEnd', () => {
+    for (const i of deferred) if (!destroyed) upgrade(i);
+    deferred.clear();
   });
   pswp.on('afterInit', updateBars);
   pswp.on('close', () => host.revealIndex(pswp.currIndex));
