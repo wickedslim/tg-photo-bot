@@ -27,7 +27,9 @@ async function send(disk, it, img) {
   const blob = await toJpeg(img);
   if (!blob) return;
   const saved = await disk.savePreview(it, blob, img.naturalWidth, img.naturalHeight);
-  // Флаг v придёт со списком фото при следующем полном обновлении, а пока помечаем у себя.
+  // Копия есть: сетка и просмотр сразу переходят на неё (средний размер — уже копия 800 px, а не
+  // размытая обложка). vp — чтобы адрес файла сменился и браузер не взял из кэша скачанный оригинал.
+  it.v = 1;
   it.vp = 1;
   if (saved?.w && !it.w) Object.assign(it, { w: saved.w, h: saved.h });
 }

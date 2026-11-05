@@ -21,7 +21,14 @@ export class PreviewLoader {
   // У оригинала (фото файлом) с лёгкой копией «средний» и «большой» размеры — уже копия, а не сам файл:
   // отдельный ключ, чтобы не показывать из кэша тяжёлый оригинал, скачанный до появления копии.
   key(item, size) {
-    return (this.disk.sizeKey?.(size) || size) + '|' + item.p + (item.k === 'd' && item.v ? '|v' : '');
+    return (this.disk.sizeKey?.(size) || size) + '|' + item.p + this.variant(item);
+  }
+
+  // Тот же суффикс — и для кэша в памяти, и для кэша на диске телефона. Иначе с диска вернётся
+  // оригинал HEIC, скачанный до появления копии: он тяжёлый (секунда на расшифровку) и в HDR
+  // (ярче копии — картинка «тускнеет», когда загружается большое фото).
+  variant(item) {
+    return item.k === 'd' && item.v ? '|v' : '';
   }
 
   peek(item, size) {
@@ -103,11 +110,17 @@ export class PreviewLoader {
   async _run(job) {
     try {
       const sk = this.disk.sizeKey?.(job.size) || job.size;
-      let blob = this.persist ? await this.store.get(sk, job.item.p) : null;
+      const v = this.variant(job.item);
+      const path = job.item.p + v;
+      let blob = this.persist ? await this.store.get(sk, path) : null;
       if (!blob) {
         if (job.controller.signal.aborted) return;
         blob = await this.disk.previewBlob(job.item, job.size, job.controller.signal);
-        if (this.persist) this.store.put(sk, job.item.p, blob);
+        if (this.persist) {
+          this.store.put(sk, path, blob);
+          // Старая запись (оригинал вместо миниатюры) больше не нужна — освобождаем место.
+          if (v) this.store.delete?.(sk, job.item.p);
+        }
       }
       if (job.done) return;
       const url = URL.createObjectURL(blob);

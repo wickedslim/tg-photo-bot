@@ -31,6 +31,10 @@ export function previewStore(name) {
       const res = new Response(blob, { headers: { 'content-type': blob.type || 'image/jpeg' } });
       await c.put(key(size, path), res).catch(() => {});
     },
+    async delete(size, path) {
+      const c = await open();
+      if (c) await c.delete(key(size, path)).catch(() => {});
+    },
     async clear() {
       opened = null;
       if ('caches' in window) await caches.delete(name);
