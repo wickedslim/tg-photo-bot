@@ -12,6 +12,7 @@ import { openViewer } from './viewer.js';
 import { showSettings, showAutoUpload, showMessage, toast, askText } from './screens.js';
 import { showUploadSheet, Uploader } from './upload.js';
 import { Indexer } from './ml/indexer.js';
+import { Backfill } from './previews.js';
 
 const FULL_REFRESH_MS = 24 * 3600 * 1000;
 // Меняется, когда список фото с сервера получает новые поля: сохранённый на телефоне список
@@ -52,6 +53,7 @@ async function startLibrary(disk, ns) {
     indexer.setItems(all);
     collections.setItems(all);
     search.setItems(all);
+    backfill.setItems(all);
   };
 
   // Каркас: три вкладки и таб-бар внизу, как в «Фото» на iPhone.
@@ -77,6 +79,8 @@ async function startLibrary(disk, ns) {
   showTab('library');
 
   const indexer = new Indexer({ ns, disk, store });
+  // Лёгкие копии для оригиналов (фото файлом) — в фоне, чтобы они открывались быстро с первого раза.
+  const backfill = new Backfill({ disk, onDone: () => saveUpdated() });
   if (import.meta.env.DEV) Object.assign(window, { __ix: indexer, __disk: disk }); // для отладки в браузере
   const askName = (current) =>
     askText({ title: current ? 'Изменить имя' : 'Кто это?', message: 'Если дать двум карточкам одно имя, они объединятся.', value: current, placeholder: 'Имя' });

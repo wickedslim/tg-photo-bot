@@ -91,7 +91,10 @@ export class Api {
   }
 
   fileUrl(item, size, { download = false } = {}) {
-    return `${this.base}/api/file/${item.i}?s=${sizeKey(size)}&k=${encodeURIComponent(this.fileToken || '')}${download ? '&dl=1' : ''}`;
+    // v=1 — у оригинала уже есть лёгкая копия: другой адрес, чтобы браузер не взял из своего кэша
+    // оригинал, скачанный по этому же адресу раньше.
+    const v = item.k === 'd' && (item.v || item.vp) && size !== 'orig' ? '&v=1' : '';
+    return `${this.base}/api/file/${item.i}?s=${sizeKey(size)}${v}&k=${encodeURIComponent(this.fileToken || '')}${download ? '&dl=1' : ''}`;
   }
 
   async previewBlob(item, size, signal) {

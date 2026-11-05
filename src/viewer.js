@@ -6,7 +6,7 @@ import 'photoswipe/style.css';
 import { pushBack, openExternal, haptic, downloadViaTelegram, confirmDestructive } from './tg.js';
 import { isAbort } from './api.js';
 import { dayLabel } from './grid.js';
-import { PREVIEW_FROM } from './upload.js';
+import { fromImage } from './previews.js';
 
 const BIG = 'XXXL';
 const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
@@ -28,9 +28,6 @@ const ICONS = {
 };
 
 // host — сетка, из которой открыли фото: даёт миниатюру для анимации и прокручивается вслед за листанием.
-// Оригиналы, для которых лёгкая копия уже отправляется (общий список на все открытия просмотра).
-const makingPreview = new Set();
-
 export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, toast, onDelete, onUpdate }) {
   // Пропорции фото: из загруженной картинки, иначе — из размеров, которые знает сервер.
   const ratioOf = (it) => {
@@ -59,7 +56,8 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
               (img.decode ? img.decode() : Promise.resolve())
                 .catch(() => {})
                 .then(() => {
-                  makePreview(it, img);
+                  // Оригинал открыли впервые: он скачан целиком — делаем из него лёгкую копию.
+                  fromImage(disk, it, img, onUpdate);
                   resolve();
                 });
             };
@@ -89,36 +87,6 @@ export function openViewer({ items, index, thumbs, bigs, disk, host, favorites, 
           }
         },
       );
-  }
-
-  // Оригинал открыли впервые: он скачан целиком (это и было долго). Делаем из него JPEG до 2560 px
-  // и отправляем на сервер — в следующий раз фото откроется так же быстро, как обычное.
-  function makePreview(it, img) {
-    if (it.k !== 'd' || it.v || it.vp || !disk.savePreview || makingPreview.has(it.p) || !img.naturalWidth) return;
-    if (it.s && it.s < PREVIEW_FROM) return;
-    makingPreview.add(it.p);
-    setTimeout(async () => {
-      try {
-        const k = Math.min(1, 2560 / Math.max(img.naturalWidth, img.naturalHeight));
-        const c = document.createElement('canvas');
-        c.width = Math.max(1, Math.round(img.naturalWidth * k));
-        c.height = Math.max(1, Math.round(img.naturalHeight * k));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
-        c.width = c.height = 0;
-        if (!blob) return;
-        const saved = await disk.savePreview(it, blob, img.naturalWidth, img.naturalHeight);
-        // Копия на сервере есть. Флаг v придёт со списком фото при следующем полном обновлении —
-        // до этого кэш живёт по старым ключам, и уже скачанный оригинал не качается заново.
-        it.vp = 1;
-        if (saved?.w && !it.w) Object.assign(it, { w: saved.w, h: saved.h });
-        onUpdate?.(it);
-      } catch {
-        // Не вышло (нет сети, Telegram занят) — попробуем, когда фото откроют снова.
-      } finally {
-        makingPreview.delete(it.p);
-      }
-    }, 400);
   }
 
   function ensureThumb(it, i) {
