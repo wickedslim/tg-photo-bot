@@ -1,14 +1,14 @@
 // Работа с базой D1: одна таблица photos, у каждой записи есть владелец user_id.
 // Все запросы на чтение фильтруют по user_id — чужие фото не видны и не скачиваются.
 
-const COLS = ['user_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon'];
+const COLS = ['user_id', 'chat_id', 'message_id', 'date', 'taken', 'kind', 'width', 'height', 'size', 'name', 'mime', 'caption', 'media_group_id', 'thumb_id', 'medium_id', 'large_id', 'orig_id', 'sizes', 'hash', 'source', 'lat', 'lon'];
 
 // pv — у оригинала (фото файлом) есть лёгкая копия для просмотра. Если правят подпись сообщения
 // с тем же файлом (вебхук edited_message), копия сохраняется.
 const ITEM_COLS = "id, date, taken, kind, width, height, size, name, caption, source, lat, lon, (kind = 'doc' AND large_id <> orig_id) AS pv";
 
 const UPSERT = `INSERT INTO photos (${COLS.join(', ')}) VALUES (${COLS.map(() => '?').join(', ')})
-  ON CONFLICT (user_id, message_id) DO UPDATE SET
+  ON CONFLICT (chat_id, message_id) DO UPDATE SET
     kind = excluded.kind, size = excluded.size, name = excluded.name, mime = excluded.mime, caption = excluded.caption,
     width = COALESCE(excluded.width, photos.width), height = COALESCE(excluded.height, photos.height),
     taken = COALESCE(excluded.taken, photos.taken), lat = COALESCE(excluded.lat, photos.lat), lon = COALESCE(excluded.lon, photos.lon),
@@ -19,7 +19,8 @@ const UPSERT = `INSERT INTO photos (${COLS.join(', ')}) VALUES (${COLS.map(() =>
   RETURNING ${ITEM_COLS}`;
 
 export function upsertStmt(db, userId, rec) {
-  const row = { ...rec, user_id: userId };
+  // chat_id не указан — сообщение в личном чате с ботом, его номер совпадает с номером пользователя.
+  const row = { chat_id: userId, ...rec, user_id: userId };
   return db.prepare(UPSERT).bind(...COLS.map((c) => (row[c] === undefined ? null : row[c])));
 }
 
@@ -131,4 +132,27 @@ export function setPreview(db, userId, id, { thumb_id, medium_id, large_id, widt
     )
     .bind(thumb_id, medium_id, large_id, width ?? null, height ?? null, id, userId)
     .first();
+}
+
+// ── Канал владельца ──
+export function channelOwner(db, chatId) {
+  return db.prepare('SELECT user_id, can_delete FROM channels WHERE chat_id = ?').bind(chatId).first();
+}
+
+export function channelOf(db, userId) {
+  return db.prepare('SELECT chat_id, title, can_delete, added FROM channels WHERE user_id = ?').bind(userId).first();
+}
+
+// Один канал на владельца: подключили новый — он заменяет прежний (фото из прежнего остаются в галерее).
+export function linkChannel(db, userId, chatId, title, canDelete, now) {
+  return db.batch([
+    db.prepare('DELETE FROM channels WHERE chat_id = ? AND user_id <> ?').bind(chatId, userId),
+    db
+      .prepare('INSERT INTO channels (user_id, chat_id, title, can_delete, added) VALUES (?, ?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET chat_id = excluded.chat_id, title = excluded.title, can_delete = excluded.can_delete, added = excluded.added')
+      .bind(userId, chatId, title, canDelete ? 1 : 0, now),
+  ]);
+}
+
+export function unlinkChannel(db, chatId) {
+  return db.prepare('DELETE FROM channels WHERE chat_id = ? RETURNING user_id, title').bind(chatId).first();
 }

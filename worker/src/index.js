@@ -17,7 +17,7 @@
 import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, AuthError, safeEqual } from './auth.js';
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif } from './exif.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -57,8 +57,14 @@ async function route(request, env, ctx) {
   if (!env.BOT_TOKEN) throw new HttpError(500, 'not_configured', 'Не задан BOT_TOKEN');
 
   if (request.method === 'OPTIONS') return preflight(request, env);
-  if (pathname === '/tg/webhook' && request.method === 'POST') return webhook(request, env);
-  if (pathname === '/api/list' && request.method === 'GET') return list(request, env, url);
+  if (pathname === '/tg/webhook' && request.method === 'POST') {
+    ctx?.waitUntil?.(ensureWebhook(env, url.origin));
+    return webhook(request, env);
+  }
+  if (pathname === '/api/list' && request.method === 'GET') {
+    ctx?.waitUntil?.(ensureWebhook(env, url.origin));
+    return list(request, env, url);
+  }
   if (pathname === '/api/upload' && request.method === 'POST') return upload(request, env, url);
   if (pathname === '/api/auto/key') return autoKey(request, env, url);
   if (pathname === '/api/auto/since' && request.method === 'GET') return autoSince(request, env);
@@ -129,6 +135,9 @@ async function webhook(request, env) {
   } catch {
     return new Response('ok');
   }
+  if (update.my_chat_member) return memberUpdate(env, update.my_chat_member);
+  const post = update.channel_post || update.edited_channel_post;
+  if (post) return channelPost(env, post);
   const msg = update.message || update.edited_message;
   // Только личные сообщения от людей: группы и каналы бота не интересуют.
   if (!msg || msg.chat?.type !== 'private' || !msg.from || msg.from.is_bot || msg.chat.id !== msg.from.id) return new Response('ok');
@@ -156,6 +165,61 @@ async function webhook(request, env) {
     await savePhotos(env.DB, uid, [rec]);
   }
   return new Response('ok');
+}
+
+// ── Канал владельца ──
+// Бота сделали администратором канала: всё, что публикуется в этом канале, — фото того, кто его добавил.
+// В канале бот может удалять сообщения любой давности (в личном чате — только за последние 48 часов).
+async function memberUpdate(env, m) {
+  const chat = m.chat || {};
+  if (chat.type !== 'channel' || !m.from || m.from.is_bot) return new Response('ok');
+  const st = m.new_chat_member || {};
+  if (st.status === 'administrator') {
+    if (!allowedUser(env, m.from.id)) return new Response('ok');
+    await linkChannel(env.DB, m.from.id, chat.id, chat.title || null, st.can_delete_messages, Date.now());
+    const title = chat.title ? `«${chat.title}»` : '';
+    return reply(
+      m.from.id,
+      `Канал ${title} подключён. Всё, что вы опубликуете в нём, появится в галерее.` +
+        (st.can_delete_messages ? '' : '\n\nДайте боту в канале право «Удалять сообщения» — иначе корзина в галерее не сможет удалять фото из канала.'),
+    );
+  }
+  if (['left', 'kicked', 'member', 'restricted'].includes(st.status)) {
+    const was = await unlinkChannel(env.DB, chat.id);
+    if (was) return reply(was.user_id, `Бот больше не администратор канала${was.title ? ` «${was.title}»` : ''}: новые фото оттуда в галерею не попадут. Уже загруженные останутся.`);
+  }
+  return new Response('ok');
+}
+
+async function channelPost(env, post) {
+  const owner = await channelOwner(env.DB, post.chat?.id);
+  if (!owner || !allowedUser(env, owner.user_id)) return new Response('ok');
+  const rec = extractPhoto(post);
+  if (rec) {
+    rec.source = 'channel';
+    if (rec.kind === 'doc') Object.assign(rec, await docMeta(env, rec));
+    await savePhotos(env.DB, owner.user_id, [rec]);
+  }
+  return new Response('ok');
+}
+
+// Какие события Telegram присылает боту. Если вебхук настроен по-старому (без каналов), сервер
+// сам дописывает нужное — так не нужно заново вводить токен бота. Проверяем раз на запуск сервера.
+const UPDATES = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'my_chat_member'];
+let webhookChecked = false;
+async function ensureWebhook(env, origin) {
+  if (webhookChecked || !env.WEBHOOK_SECRET) return;
+  webhookChecked = true;
+  try {
+    const info = await callApi(env.BOT_TOKEN, 'getWebhookInfo', {});
+    const url = `${origin}/tg/webhook`;
+    if (info.url !== url) return; // вебхук смотрит не на этот сервер — не трогаем
+    const have = info.allowed_updates || [];
+    if (!have.length || UPDATES.every((u) => have.includes(u))) return;
+    await callApi(env.BOT_TOKEN, 'setWebhook', { url, secret_token: env.WEBHOOK_SECRET, allowed_updates: UPDATES });
+  } catch {
+    webhookChecked = false;
+  }
 }
 
 // Картинку, присланную файлом, Telegram не трогает — в ней сохранились дата съёмки и место.
@@ -458,11 +522,11 @@ async function sha256(data) {
 // бот удалить не может, тогда говорим об этом приложению, и пользователь удалит сообщение сам.
 async function removePhoto(request, env, id) {
   const uid = await authUser(request, env);
-  const row = await env.DB.prepare('SELECT message_id FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
+  const row = await env.DB.prepare('SELECT chat_id, message_id FROM photos WHERE id = ? AND user_id = ?').bind(id, uid).first();
   if (!row) throw new HttpError(404, 'not_found', 'Фото не найдено');
   let chat = 'deleted';
   try {
-    await callApi(env.BOT_TOKEN, 'deleteMessage', { chat_id: uid, message_id: row.message_id }, { waitUpTo: 3 });
+    await callApi(env.BOT_TOKEN, 'deleteMessage', { chat_id: row.chat_id, message_id: row.message_id }, { waitUpTo: 3 });
   } catch (e) {
     if (!(e instanceof TgError)) throw e;
     // «message to delete not found» — в чате его уже нет, это тоже удачное удаление.

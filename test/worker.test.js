@@ -400,6 +400,56 @@ test('лёгкая копия оригинала: открывается быс�
   assert.deepEqual(sent.map((x) => x.method), ['sendDocument', 'sendPhoto', 'deleteMessage']);
 });
 
+test('канал владельца: подключение, фото из канала, удаление там же', async () => {
+  const O = 777;
+  const CH = -1001234567890;
+  const member = (status, from = O, extra = {}) => ({
+    update_id: 900,
+    my_chat_member: { chat: { id: CH, type: 'channel', title: 'Мои фото' }, from: { id: from, is_bot: false, first_name: 'T' }, date: 1700000000, old_chat_member: { status: 'left', user: { id: 1, is_bot: true } }, new_chat_member: { status, user: { id: 1, is_bot: true }, ...extra } },
+  });
+  const post = (message_id, extra = {}) => ({
+    update_id: 900 + message_id,
+    channel_post: { message_id, date: 1700000500, chat: { id: CH, type: 'channel', title: 'Мои фото' }, photo: [{ file_id: `ch_${message_id}`, file_unique_id: 'x', width: 1280, height: 960 }], ...extra },
+  });
+
+  // пока канал не подключён — фото оттуда не берём
+  await hook(post(5));
+  assert.equal((await listOf(O)).items.length, 0);
+
+  // бота сделали администратором — канал привязан к тому, кто это сделал, бот сообщает об этом
+  const r = await (await hook(member('administrator', O, { can_post_messages: true, can_delete_messages: true }))).json();
+  assert.equal(r.method, 'sendMessage');
+  assert.equal(r.chat_id, O);
+  assert.match(r.text, /Мои фото/);
+
+  await hook(post(5));
+  // в личном чате тот же номер сообщения — это другое фото, оба сохраняются
+  await hook(photoMsg(O, 5));
+  let items = (await listOf(O)).items;
+  assert.equal(items.length, 2);
+  const fromChannel = items.find((x) => x.o === 'channel');
+  assert.ok(fromChannel);
+  // чужие пользователи фото из канала не видят
+  assert.equal((await listOf(A)).items.some((x) => x.o === 'channel'), false);
+
+  // удаление — в самом канале
+  sent.length = 0;
+  const del = await (await api(`/api/photo/${fromChannel.i}`, { user: O, method: 'DELETE' })).json();
+  assert.equal(del.chat, 'deleted');
+  assert.deepEqual(sent, [{ method: 'deleteMessage', chat_id: CH, message_id: 5 }]);
+  assert.equal((await listOf(O)).items.length, 1);
+
+  // без права удалять — бот предупреждает
+  const warn = await (await hook(member('administrator', O, { can_post_messages: true, can_delete_messages: false }))).json();
+  assert.match(warn.text, /Удалять сообщения/);
+
+  // бота убрали из администраторов — новые фото из канала больше не берём
+  const bye = await (await hook(member('left', O))).json();
+  assert.equal(bye.chat_id, O);
+  await hook(post(6));
+  assert.equal((await listOf(O)).items.length, 1);
+});
+
 test('удаление: своё — из галереи и из чата, чужое — нельзя, старое сообщение — только из галереи', async () => {
   const before = (await listOf(A)).items;
   const last = before[before.length - 1];

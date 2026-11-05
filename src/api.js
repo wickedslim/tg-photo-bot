@@ -17,7 +17,7 @@ const SIZE = { S: 'thumb', M: 'thumb', L: 'medium', XL: 'medium', XXL: 'large', 
 export const sizeKey = (size) => SIZE[size] || size;
 
 // Альбомы — по тому, откуда пришло фото (в Telegram нет папок).
-const ALBUM = { app: 'Загружено', auto: 'Автозагрузка', archive: 'Архив с iPhone' };
+const ALBUM = { app: 'Загружено', auto: 'Автозагрузка', archive: 'Архив с iPhone', channel: 'Канал' };
 
 // Запись с сервера → фото в том виде, в каком его понимает галерея:
 // p — уникальный «путь» (по нему кэш, избранное, люди), n — имя, t — дата, la/lo — место.

@@ -79,7 +79,7 @@ const worker = WORKER_URL.replace(/\/+$/, '');
 await call('setWebhook', {
   url: `${worker}/tg/webhook`,
   secret_token: WEBHOOK_SECRET,
-  allowed_updates: ['message', 'edited_message'],
+  allowed_updates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'my_chat_member'],
 });
 await call('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Галерея', web_app: { url: WEBAPP_URL } } });
 await call('setMyCommands', { commands: [{ command: 'start', description: 'Открыть галерею' }] });

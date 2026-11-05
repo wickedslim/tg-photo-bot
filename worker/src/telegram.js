@@ -80,6 +80,7 @@ const short = (p) => ({ id: p.file_id, u: p.file_unique_id, w: p.width, h: p.hei
 export function extractPhoto(msg) {
   if (!msg) return null;
   const base = {
+    chat_id: msg.chat?.id,
     message_id: msg.message_id,
     date: msg.date,
     caption: msg.caption ? String(msg.caption).slice(0, 1024) : null,
