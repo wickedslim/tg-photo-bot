@@ -154,7 +154,7 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
 // ── Автозагрузка с iPhone: личный ключ и готовая «Быстрая команда» ──
 // Ссылка iCloud на готовую команду «Фото в Telegram» (как её получить — docs/shortcut.md). Пока ссылки нет,
 // экран предлагает собрать команду по инструкции.
-export const SHORTCUT_LINK = '';
+export const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/736ad1aa12d9432ca3b294f9163af2cc';
 
 export async function showAutoUpload({ api }) {
   const s = openSheet('Автозагрузка с iPhone', '<div class="auto-body"><div class="empty-inline"><span class="spinner small"></span></div></div>');
@@ -234,7 +234,7 @@ export async function showAutoUpload({ api }) {
       ? `
         <div class="group-title">1. Добавьте команду</div>
         <button class="big-btn" id="add" data-v="${esc(key)}">Добавить команду</button>
-        <div class="setup-hint">Ключ скопируется сам. Когда iPhone спросит ключ, нажмите на поле → <b>«Вставить»</b> → <b>«Добавить команду»</b>.</div>
+        <div class="setup-hint">Ключ скопируется сам. Когда iPhone спросит ключ, сотрите в поле «Key ВСТАВЬТЕ_КЛЮЧ», нажмите на поле → <b>«Вставить»</b> → <b>«Добавить команду»</b>.</div>
         ${copyRow('Ключ (если не вставился)', key)}
         ${automation.replace('Запускать автоматически', '2. Запускать автоматически')}
         ${settingsBlock()}

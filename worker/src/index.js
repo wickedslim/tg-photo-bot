@@ -298,7 +298,7 @@ function num(v, min, max) {
 // Кто загружает: приложение (initData) или «Быстрая команда» (личный ключ).
 async function uploader(request, env) {
   const h = request.headers.get('authorization') || '';
-  if (!h.startsWith('Key ')) return { uid: await authUser(request, env), source: 'app' };
+  if (h.startsWith('tma ') || !h) return { uid: await authUser(request, env), source: 'app' };
   const row = await keyOwner(request, env);
   return { uid: row.user_id, source: 'auto', key: row };
 }
@@ -602,12 +602,14 @@ async function replaceWithStub(env, row) {
 }
 
 // ── Автозагрузка: личный ключ ──
-const KEY_RE = /^tgp_[A-Za-z0-9_-]{32}$/;
+// Ключ ищем в любом месте заголовка: при установке готовой команды человек может вставить его рядом
+// с заглушкой «Key ВСТАВЬТЕ_КЛЮЧ» или без слова «Key».
+const KEY_RE = /(?:^|[^A-Za-z0-9_-])(tgp_[A-Za-z0-9_-]{32})(?![A-Za-z0-9_-])/;
 
 async function keyOwner(request, env) {
   const h = request.headers.get('authorization') || '';
-  const key = h.startsWith('Key ') ? h.slice(4).trim() : '';
-  if (!KEY_RE.test(key)) throw new HttpError(401, 'bad_key', 'Нет ключа автозагрузки или он записан с ошибкой');
+  const key = KEY_RE.exec(h)?.[1];
+  if (!key) throw new HttpError(401, 'bad_key', 'Нет ключа автозагрузки или он записан с ошибкой');
   const row = await userByKey(env.DB, await sha256(key));
   if (!row) throw new HttpError(401, 'bad_key', 'Ключ не подходит — создайте новый в приложении (Настройки → Автозагрузка)');
   if (!allowedUser(env, row.user_id)) throw new HttpError(403, 'forbidden', 'Этот бот закрыт владельцем для посторонних');

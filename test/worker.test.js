@@ -237,6 +237,11 @@ test('ключ автозагрузки: загружает только в св
   assert.notEqual(next.key, created.key);
   assert.equal((await api('/api/auto/since', { headers: auth })).status, 401);
   assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key ' + next.key } })).status, 200);
+  // ключ вставили рядом с заглушкой из готовой команды или без слова «Key» — всё равно находим
+  for (const h of ['Key VSTAVTE_KLYUCHKey ' + next.key, next.key, ' Key ' + next.key + ' ']) {
+    assert.equal((await api('/api/auto/since', { headers: { authorization: h } })).status, 200, h);
+  }
+  assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key x' + next.key } })).status, 401);
   // отключение
   await api('/api/auto/key', { user: A, method: 'DELETE' });
   assert.equal((await api('/api/auto/since', { headers: { authorization: 'Key ' + next.key } })).status, 401);
