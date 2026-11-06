@@ -129,6 +129,10 @@ export class MockDisk {
     this.key = { created: Date.now() };
     return { key: 'tgp_DEMO' + 'x'.repeat(28), base, nextUrl: base + '/api/auto/next', uploadUrl: base + '/api/upload', sinceUrl: base + '/api/auto/since' };
   }
+  async uploadNow() {
+    return { ok: true };
+  }
+
   async saveAutoSettings(settings) {
     await new Promise((r) => setTimeout(r, 200));
     this.autoSettings = { ...settings };

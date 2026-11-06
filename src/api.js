@@ -164,6 +164,10 @@ export class Api {
     return this.req('/api/auto/key', { method: 'DELETE' });
   }
   // Настройки автозагрузки: { original, archive } — команда на iPhone узнаёт их у сервера сама.
+  uploadNow() {
+    return this.req('/api/auto/now', { method: 'POST', body: '{}' });
+  }
+
   saveAutoSettings(settings) {
     return this.req('/api/auto/settings', { method: 'POST', body: JSON.stringify(settings) });
   }

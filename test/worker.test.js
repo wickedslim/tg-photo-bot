@@ -336,14 +336,14 @@ test('готовая команда: задание от сервера, нас�
   // поиск начинается с прошлой минуты: «Команды» сравнивают даты с точностью до минуты
   assert.equal((await next()).since, '2012-05-05T09:59:30Z');
 
-  // через 3 часа — снова очередь новых фото
+  // через 12 часов — снова очередь новых фото
   const db = await mf.getD1Database('DB');
-  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
   assert.equal((await next()).stage, 'archive');
 
   // прошло время, задание «новые» привезло фото — следующий запуск снова за новыми, и только пустой уступает старым
-  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
   const fresh = new FormData();
   fresh.set('file', jpeg('fresh-new'));
@@ -353,7 +353,7 @@ test('готовая команда: задание от сервера, нас�
   assert.equal((await next()).stage, 'archive');
 
   // задание «новые» нашло только уже загруженное фото: это повтор, значит, новых нет — следующий запуск за старыми
-  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
   const again2 = new FormData();
   again2.set('file', jpeg('fresh-new'));
@@ -373,16 +373,21 @@ test('готовая команда: задание от сервера, нас�
   last.set('file', jpeg('after-key'));
   last.set('taken', new Date(Date.now() + 60000).toISOString());
   assert.equal((await (await api('/api/upload?archive=1', { headers: auth, method: 'POST', body: last })).json()).done, true);
-  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 31 * 60 * 1000, U).run();
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
 
-  // новых нет — полчаса телефон ничего не ищет, и частые запуски эту паузу не продлевают
+  // новых нет — 12 часов телефон ничего не ищет, и частые запуски эту паузу не продлевают
   const lastNew = async () => (await db.prepare('SELECT last_new FROM auto_settings WHERE user_id = ?').bind(U).first()).last_new;
   const checked = await lastNew();
   t = await next();
   assert.deepEqual({ stage: t.stage, ago: t.ago }, { stage: 'idle', ago: 0 });
   assert.equal(await lastNew(), checked);
-  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 31 * 60 * 1000, U).run();
+  // «Загрузить сейчас» снимает паузу; по ключу автозагрузки этого сделать нельзя
+  assert.equal((await api('/api/auto/now', { headers: auth, method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await next()).stage, 'idle');
+  assert.equal((await api('/api/auto/now', { user: U, method: 'POST', body: '{}' })).status, 200);
+  assert.equal((await next()).stage, 'new');
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
   // запуск привёз фото — паузы нет: снимков могло быть больше, чем за один запуск
   const more = new FormData();

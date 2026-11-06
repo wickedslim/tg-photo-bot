@@ -177,7 +177,7 @@ export async function showAutoUpload({ api }) {
       <li>Внутрь «Если» добавьте действие <b>«Запустить команду»</b> → <b>«Фото в Telegram»</b>.</li>
       <li>Один раз: «Настройки» → «Приложения» → «Команды» → «Дополнительно» → включите <b>«Разрешить отправку больших объёмов данных»</b>. Без этого iPhone пропускает за раз только одно фото.</li>
     </ol>
-    <div class="group-foot">Новые снимки уходят, когда вы открываете Telegram и телефон подключён к Wi‑Fi. Если новых снимков не было, следующая проверка будет через 30 минут. Не блокируйте телефон, пока идёт отправка: на заблокированном экране iPhone её прерывает. В первый раз iPhone спросит, можно ли отправлять фото на сервер, — ответьте <b>«Разрешать всегда»</b>.</div>`;
+    <div class="group-foot">Новые снимки уходят, когда вы открываете Telegram и телефон подключён к Wi‑Fi. Новые снимки проверяются раз в 12 часов, чтобы не нагружать телефон. Не блокируйте телефон, пока идёт отправка: на заблокированном экране iPhone её прерывает. В первый раз iPhone спросит, можно ли отправлять фото на сервер, — ответьте <b>«Разрешать всегда»</b>.</div>`;
 
   const statusRows = (k) => `
     <div class="group">
@@ -263,6 +263,8 @@ export async function showAutoUpload({ api }) {
     } else {
       body.innerHTML = `
         ${statusRows(k)}
+        <div class="group"><button class="row link" id="now">Загрузить сейчас</button></div>
+        <div class="group-foot">Снимает паузу в 12 часов: новые снимки уйдут при следующем открытии Telegram.</div>
         ${settingsBlock()}
         ${automation}
         <div class="group">
@@ -293,6 +295,15 @@ export async function showAutoUpload({ api }) {
         toast('Скопировано');
       }),
     );
+    body.querySelector('#now')?.addEventListener('click', async () => {
+      try {
+        await api.uploadNow();
+        haptic('light');
+        toast('Готово. Закройте Telegram и откройте снова');
+      } catch (err) {
+        toast(err.message);
+      }
+    });
     body.querySelector('#add')?.addEventListener('click', (e) => {
       // Сначала копируем (пока нажатие «свежее» — иначе iPhone не даст писать в буфер), потом открываем ссылку.
       copy(e.currentTarget.dataset.v, body.querySelector('.copy-line input'));

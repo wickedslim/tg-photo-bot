@@ -20,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -74,6 +74,7 @@ async function route(request, env, ctx) {
   if (pathname === '/api/auto/archive' && request.method === 'GET') return archiveSince(request, env);
   if (pathname === '/api/auto/next' && request.method === 'GET') return autoNext(request, env, url);
   if (pathname === '/api/auto/settings' && request.method === 'POST') return autoSettingsRoute(request, env);
+  if (pathname === '/api/auto/now' && request.method === 'POST') return autoNow(request, env);
   const pv = /^\/api\/photo\/(\d{1,15})\/preview$/.exec(pathname);
   if (pv && request.method === 'POST') return previewRoute(request, env, Number(pv[1]));
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
@@ -666,10 +667,9 @@ async function archiveSince(request, env) {
 const archiveDone = (a, key) => Boolean(key && a?.cursor != null && a.cursor >= key.created);
 const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
-const NEW_EVERY = 3 * 3600 * 1000;
-// Команда запускается при каждом открытии Telegram. Если прошлая проверка новых ничего не привезла,
-// следующие полчаса телефону незачем снова искать и пересылать снимки последней минуты.
-const IDLE_PAUSE = 30 * 60 * 1000;
+// Команда запускается при каждом открытии Telegram, а новые снимки проверяем раз в 12 часов: так они уходят
+// 1–2 раза в день, и телефону незачем снова и снова пересылать снимки последней минуты.
+const NEW_EVERY = 12 * 3600 * 1000;
 // «Команды» сравнивают дату в поиске фото с точностью до минуты: «после 20:48:36» значит «с 20:49». Поэтому
 // называем момент из прошлой минуты, иначе снимки той же минуты, что не успели уйти, команда больше не увидит.
 // Уже загруженные она найдёт снова, но их отсеет проверка повторов.
@@ -684,7 +684,7 @@ const beforeMinute = (ms) => Math.floor(ms / 60000) * 60000 - 30000;
 // Старые фото (если включены в галерее) идут, только когда новых нет. Заранее сервер этого не знает:
 // фото ищет сама команда, и за запуск она получает одно задание. Поэтому смотрим на прошлый запуск:
 // задание «новые» ничего не привезло — значит, новых нет, и этот запуск везёт следующую порцию архива.
-// Запуски подряд везут старые фото, но не дольше 3 часов: потом запуск снова проверяет новые.
+// Запуски подряд везут старые фото, но не дольше 12 часов: потом запуск снова проверяет новые.
 async function autoNext(request, env, url) {
   const row = await keyOwner(request, env);
   const uid = row.user_id;
@@ -706,7 +706,7 @@ async function autoNext(request, env, url) {
   }
   // Пауза: задание «искать с этой секунды» — телефон ничего не найдёт и закончит. Время проверки не обновляем,
   // иначе частые открытия Telegram продлевали бы паузу бесконечно.
-  const idle = stage === 'new' && s.lastNew != null && now - s.lastNew < IDLE_PAUSE && (row.used ?? 0) < s.lastNew;
+  const idle = stage === 'new' && s.lastNew != null && now - s.lastNew < NEW_EVERY && (row.used ?? 0) < s.lastNew;
   if (idle) {
     stage = 'idle';
     since = now;
@@ -722,6 +722,11 @@ async function autoNext(request, env, url) {
     upload: `${base}/api/upload${stage === 'archive' ? '?archive=1' : ''}`,
     mode: s.original ? 'doc' : 'photo',
   });
+}
+
+async function autoNow(request, env) {
+  await resumeAuto(env.DB, await authUser(request, env));
+  return json(request, env, { ok: true });
 }
 
 async function autoSettingsRoute(request, env) {

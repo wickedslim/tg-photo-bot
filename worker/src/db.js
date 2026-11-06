@@ -197,6 +197,11 @@ export function touchNew(db, userId, now) {
   return db.prepare('INSERT INTO auto_settings (user_id, last_new) VALUES (?1, ?2) ON CONFLICT (user_id) DO UPDATE SET last_new = ?2').bind(userId, now).run();
 }
 
+// «Загрузить сейчас» в галерее: забываем время проверки, и следующий запуск сразу ищет новые снимки.
+export function resumeAuto(db, userId) {
+  return db.prepare('UPDATE auto_settings SET last_new = NULL WHERE user_id = ?').bind(userId).run();
+}
+
 export function touchOld(db, userId, now) {
   return db.prepare('UPDATE auto_settings SET last_archive = ? WHERE user_id = ?').bind(now, userId).run();
 }
