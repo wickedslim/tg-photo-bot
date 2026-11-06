@@ -373,6 +373,22 @@ test('готовая команда: задание от сервера, нас�
   last.set('file', jpeg('after-key'));
   last.set('taken', new Date(Date.now() + 60000).toISOString());
   assert.equal((await (await api('/api/upload?archive=1', { headers: auth, method: 'POST', body: last })).json()).done, true);
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 31 * 60 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+
+  // новых нет — полчаса телефон ничего не ищет, и частые запуски эту паузу не продлевают
+  const lastNew = async () => (await db.prepare('SELECT last_new FROM auto_settings WHERE user_id = ?').bind(U).first()).last_new;
+  const checked = await lastNew();
+  t = await next();
+  assert.deepEqual({ stage: t.stage, ago: t.ago }, { stage: 'idle', ago: 0 });
+  assert.equal(await lastNew(), checked);
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 31 * 60 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+  // запуск привёз фото — паузы нет: снимков могло быть больше, чем за один запуск
+  const more = new FormData();
+  more.set('file', jpeg('after-pause'));
+  more.set('taken', '2026-09-02T08:00:00Z');
+  await api('/api/upload', { headers: auth, method: 'POST', body: more });
   assert.equal((await next()).stage, 'new');
 
   // выключили старые фото, оригиналы оставили

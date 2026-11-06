@@ -667,6 +667,9 @@ const archiveDone = (a, key) => Boolean(key && a?.cursor != null && a.cursor >= 
 const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
 const NEW_EVERY = 3 * 3600 * 1000;
+// Команда запускается при каждом открытии Telegram. Если прошлая проверка новых ничего не привезла,
+// следующие полчаса телефону незачем снова искать и пересылать снимки последней минуты.
+const IDLE_PAUSE = 30 * 60 * 1000;
 // «Команды» сравнивают дату в поиске фото с точностью до минуты: «после 20:48:36» значит «с 20:49». Поэтому
 // называем момент из прошлой минуты, иначе снимки той же минуты, что не успели уйти, команда больше не увидит.
 // Уже загруженные она найдёт снова, но их отсеет проверка повторов.
@@ -701,14 +704,20 @@ async function autoNext(request, env, url) {
       }
     }
   }
-  await (stage === 'new' ? touchNew : touchOld)(env.DB, uid, now);
+  // Пауза: задание «искать с этой секунды» — телефон ничего не найдёт и закончит. Время проверки не обновляем,
+  // иначе частые открытия Telegram продлевали бы паузу бесконечно.
+  const idle = stage === 'new' && s.lastNew != null && now - s.lastNew < IDLE_PAUSE && (row.used ?? 0) < s.lastNew;
+  if (idle) {
+    stage = 'idle';
+    since = now;
+  } else await (stage === 'new' ? touchNew : touchOld)(env.DB, uid, now);
   return json(request, env, {
     stage,
     since: isoSec(since),
     // То же «с какой даты», но числом: сколько секунд назад. «Команды» не всегда понимают дату текстом,
     // а «Текущая дата минус N секунд» (действие «Изменить дату») работает всегда. С запасом в 5 секунд
     // на дорогу ответа — повторы всё равно отсеются.
-    ago: Math.max(0, Math.ceil((now - since) / 1000) + 5),
+    ago: idle ? 0 : Math.max(0, Math.ceil((now - since) / 1000) + 5),
     limit: LIMIT,
     upload: `${base}/api/upload${stage === 'archive' ? '?archive=1' : ''}`,
     mode: s.original ? 'doc' : 'photo',
