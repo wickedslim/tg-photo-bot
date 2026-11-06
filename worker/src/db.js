@@ -96,9 +96,10 @@ export function userByKey(db, keyHash) {
   return db.prepare('SELECT user_id, created, cursor, used FROM upload_keys WHERE key_hash = ?').bind(keyHash).first();
 }
 
+// now = null — фото не сохранилось (повтор, скриншот): двигаем только отметку, used остаётся прежним.
 export function touchKey(db, userId, now, cursor) {
   return db
-    .prepare('UPDATE upload_keys SET used = ?, cursor = MAX(COALESCE(cursor, 0), COALESCE(?, 0)) WHERE user_id = ?')
+    .prepare('UPDATE upload_keys SET used = COALESCE(?, used), cursor = MAX(COALESCE(cursor, 0), COALESCE(?, 0)) WHERE user_id = ?')
     .bind(now, cursor ?? null, userId)
     .run();
 }

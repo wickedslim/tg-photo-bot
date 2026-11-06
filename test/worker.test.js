@@ -314,7 +314,7 @@ test('готовая команда: задание от сервера, нас�
   assert.deepEqual({ stage: t.stage, limit: t.limit, mode: t.mode }, { stage: 'new', limit: 100, mode: 'photo' });
   assert.match(t.upload, /\/api\/upload$/);
   assert.match(t.since, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
-  assert.ok(t.ago >= 5 && t.ago < 30, String(t.ago)); // ключ создан только что
+  assert.ok(t.ago >= 35 && t.ago < 100, String(t.ago)); // ключ создан только что, поиск — с прошлой минуты
   // без ключа и чужим нельзя
   assert.equal((await api('/api/auto/next')).status, 401);
   assert.equal((await api('/api/auto/settings', { method: 'POST', body: '{}' })).status, 401);
@@ -333,7 +333,8 @@ test('готовая команда: задание от сервера, нас�
   form.set('file', new File(['heic-old'], 'IMG_1.HEIC', { type: 'image/heic' }));
   form.set('taken', '2012-05-05T10:00:00Z');
   assert.equal((await api(new URL(t.upload).pathname + new URL(t.upload).search, { headers: auth, method: 'POST', body: form })).status, 200);
-  assert.equal((await next()).since, '2012-05-05T09:59:59Z');
+  // поиск начинается с прошлой минуты: «Команды» сравнивают даты с точностью до минуты
+  assert.equal((await next()).since, '2012-05-05T09:59:30Z');
 
   // через 3 часа — снова очередь новых фото
   const db = await mf.getD1Database('DB');
@@ -349,6 +350,15 @@ test('готовая команда: задание от сервера, нас�
   fresh.set('taken', '2026-09-01T08:00:00Z');
   assert.equal((await api('/api/upload', { headers: auth, method: 'POST', body: fresh })).status, 200);
   assert.equal((await next()).stage, 'new');
+  assert.equal((await next()).stage, 'archive');
+
+  // задание «новые» нашло только уже загруженное фото: это повтор, значит, новых нет — следующий запуск за старыми
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+  const again2 = new FormData();
+  again2.set('file', jpeg('fresh-new'));
+  again2.set('taken', '2026-09-01T08:00:00Z');
+  assert.equal((await (await api('/api/upload', { headers: auth, method: 'POST', body: again2 })).json()).skipped, 1);
   assert.equal((await next()).stage, 'archive');
 
   // телефон заряжают раз в день, новых нет: запуски идут новые → старые → новые
@@ -393,7 +403,7 @@ test('готовая команда: задание от сервера, нас�
   await api('/api/upload', { headers: auth, method: 'POST', body: up });
   const again = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
   const t2 = await (await api('/api/auto/next', { headers: { authorization: 'Key ' + again.key } })).json();
-  assert.equal(t2.since, '2026-10-01T07:59:59Z');
+  assert.equal(t2.since, '2026-10-01T07:59:30Z');
 });
 
 test('дата и место съёмки: из файла, присланного боту, и из загрузки без данных приложения', async () => {

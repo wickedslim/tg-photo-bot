@@ -404,7 +404,7 @@ async function upload(request, env, url) {
   const takenOf = (m) => num(m.taken, Date.UTC(1990, 0, 1), now + 86400000);
   if (!files.length) {
     if (archive) await touchArchive(env.DB, uid, now, archiveAt);
-    else if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
+    else if (source === 'auto') await touchKey(env.DB, uid, null, Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
     return json(request, env, { ok: true, items: [], skipped });
   }
 
@@ -667,6 +667,10 @@ const archiveDone = (a, key) => Boolean(key && a?.cursor != null && a.cursor >= 
 const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
 const NEW_EVERY = 3 * 3600 * 1000;
+// «Команды» сравнивают дату в поиске фото с точностью до минуты: «после 20:48:36» значит «с 20:49». Поэтому
+// называем момент из прошлой минуты, иначе снимки той же минуты, что не успели уйти, команда больше не увидит.
+// Уже загруженные она найдёт снова, но их отсеет проверка повторов.
+const beforeMinute = (ms) => Math.floor(ms / 60000) * 60000 - 30000;
 
 // Задание для готовой команды «Фото в Telegram» (одна на всех, ссылкой iCloud). Команда спрашивает сервер,
 // что делать, и всё, что можно менять, решается здесь, а не в самой команде:
@@ -685,7 +689,7 @@ async function autoNext(request, env, url) {
   const s = await autoSettings(env.DB, uid);
   const base = url.origin;
   let stage = 'new';
-  let since = row.cursor ? row.cursor - 1000 : row.created;
+  let since = beforeMinute(row.cursor || row.created);
   if (s.archive && s.lastNew != null) {
     const afterOld = (s.lastArchive ?? 0) > s.lastNew;
     const noNew = (row.used ?? 0) < s.lastNew;
@@ -693,7 +697,7 @@ async function autoNext(request, env, url) {
       const a = await archiveInfo(env.DB, uid);
       if (!archiveDone(a, row)) {
         stage = 'archive';
-        since = a?.cursor != null ? a.cursor - 1000 : Date.UTC(1900, 0, 1);
+        since = a?.cursor != null ? beforeMinute(a.cursor) : Date.UTC(1900, 0, 1);
       }
     }
   }
