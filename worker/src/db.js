@@ -93,7 +93,7 @@ export function deleteKey(db, userId) {
 }
 
 export function userByKey(db, keyHash) {
-  return db.prepare('SELECT user_id, created, cursor FROM upload_keys WHERE key_hash = ?').bind(keyHash).first();
+  return db.prepare('SELECT user_id, created, cursor, used FROM upload_keys WHERE key_hash = ?').bind(keyHash).first();
 }
 
 export function touchKey(db, userId, now, cursor) {
@@ -181,8 +181,8 @@ export async function findDuplicate(db, userId, rec) {
 
 // Настройки автозагрузки (см. миграцию 0006). Нет строки — всё выключено.
 export async function autoSettings(db, userId) {
-  const r = await db.prepare('SELECT original, archive, last_new FROM auto_settings WHERE user_id = ?').bind(userId).first();
-  return { original: Boolean(r?.original), archive: Boolean(r?.archive), lastNew: r?.last_new ?? null };
+  const r = await db.prepare('SELECT original, archive, last_new, last_archive FROM auto_settings WHERE user_id = ?').bind(userId).first();
+  return { original: Boolean(r?.original), archive: Boolean(r?.archive), lastNew: r?.last_new ?? null, lastArchive: r?.last_archive ?? null };
 }
 
 export function saveAutoSettings(db, userId, { original, archive }) {
@@ -194,4 +194,8 @@ export function saveAutoSettings(db, userId, { original, archive }) {
 
 export function touchNew(db, userId, now) {
   return db.prepare('INSERT INTO auto_settings (user_id, last_new) VALUES (?1, ?2) ON CONFLICT (user_id) DO UPDATE SET last_new = ?2').bind(userId, now).run();
+}
+
+export function touchOld(db, userId, now) {
+  return db.prepare('UPDATE auto_settings SET last_archive = ? WHERE user_id = ?').bind(now, userId).run();
 }

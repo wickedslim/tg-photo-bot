@@ -20,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -674,8 +674,10 @@ const NEW_EVERY = 3 * 3600 * 1000;
 //   limit  — сколько фото взять за запуск;
 //   upload — куда их отправлять (обычная загрузка или архив);
 //   mode   — 'photo' (сжать в JPEG до 2560 px на телефоне) или 'doc' (оригинал файлом + обложка).
-// Старые фото (если включены в галерее) идут вперемешку с новыми: раз в 3 часа запуск везёт новые
-// снимки, остальные запуски — следующую порцию архива. Когда архив дойдёт до конца, остаются только новые.
+// Старые фото (если включены в галерее) идут, только когда новых нет. Заранее сервер этого не знает:
+// фото ищет сама команда, и за запуск она получает одно задание. Поэтому смотрим на прошлый запуск:
+// задание «новые» ничего не привезло — значит, новых нет, и этот запуск везёт следующую порцию архива.
+// Запуски подряд везут старые фото, но не дольше 3 часов: потом запуск снова проверяет новые.
 async function autoNext(request, env, url) {
   const row = await keyOwner(request, env);
   const uid = row.user_id;
@@ -684,15 +686,18 @@ async function autoNext(request, env, url) {
   const base = url.origin;
   let stage = 'new';
   let since = row.cursor ? row.cursor - 1000 : row.created;
-  // Новые фото проверялись меньше 3 часов назад — этот запуск отдаём архиву.
-  if (s.archive && s.lastNew != null && now - s.lastNew < NEW_EVERY) {
-    const a = await archiveInfo(env.DB, uid);
-    if (!archiveDone(a, row)) {
-      stage = 'archive';
-      since = a?.cursor != null ? a.cursor - 1000 : Date.UTC(1900, 0, 1);
+  if (s.archive && s.lastNew != null) {
+    const afterOld = (s.lastArchive ?? 0) > s.lastNew;
+    const noNew = (row.used ?? 0) < s.lastNew;
+    if (afterOld ? now - s.lastNew < NEW_EVERY : noNew) {
+      const a = await archiveInfo(env.DB, uid);
+      if (!archiveDone(a, row)) {
+        stage = 'archive';
+        since = a?.cursor != null ? a.cursor - 1000 : Date.UTC(1900, 0, 1);
+      }
     }
   }
-  if (stage === 'new') await touchNew(env.DB, uid, now);
+  await (stage === 'new' ? touchNew : touchOld)(env.DB, uid, now);
   return json(request, env, {
     stage,
     since: isoSec(since),

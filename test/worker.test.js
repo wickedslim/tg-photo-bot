@@ -301,7 +301,7 @@ test('архив: от старых фото к новым, без повтор�
   assert.equal((await (await api('/api/auto/key', { user: U })).json()).archive.done, true);
 });
 
-test('готовая команда: задание от сервера, настройки из галереи, архив вперемешку с новыми', async () => {
+test('готовая команда: задание от сервера, настройки из галереи, старые фото — когда нет новых', async () => {
   const U = 6161;
   const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
   assert.match(created.nextUrl, /\/api\/auto\/next$/);
@@ -339,6 +339,23 @@ test('готовая команда: задание от сервера, нас�
   const db = await mf.getD1Database('DB');
   await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'new');
+  assert.equal((await next()).stage, 'archive');
+
+  // прошло время, задание «новые» привезло фото — следующий запуск снова за новыми, и только пустой уступает старым
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 4 * 3600 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+  const fresh = new FormData();
+  fresh.set('file', jpeg('fresh-new'));
+  fresh.set('taken', '2026-09-01T08:00:00Z');
+  assert.equal((await api('/api/upload', { headers: auth, method: 'POST', body: fresh })).status, 200);
+  assert.equal((await next()).stage, 'new');
+  assert.equal((await next()).stage, 'archive');
+
+  // телефон заряжают раз в день, новых нет: запуски идут новые → старые → новые
+  await db.prepare('UPDATE upload_keys SET used = ? WHERE user_id = ?').bind(Date.now() - 72 * 3600 * 1000, U).run();
+  await db.prepare('UPDATE auto_settings SET last_new = ?, last_archive = ? WHERE user_id = ?').bind(Date.now() - 48 * 3600 * 1000, Date.now() - 24 * 3600 * 1000, U).run();
+  assert.equal((await next()).stage, 'new');
+  await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 24 * 3600 * 1000, U).run();
   assert.equal((await next()).stage, 'archive');
 
   // архив дошёл до конца — остаются только новые
