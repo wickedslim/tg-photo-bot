@@ -168,6 +168,11 @@ export class Api {
     return this.req('/api/auto/now', { method: 'POST', body: '{}' });
   }
 
+  // Архив застрял — продолжить его с более поздней даты (миллисекунды).
+  skipArchive(from) {
+    return this.req('/api/auto/skip', { method: 'POST', body: JSON.stringify({ from }) });
+  }
+
   saveAutoSettings(settings) {
     return this.req('/api/auto/settings', { method: 'POST', body: JSON.stringify(settings) });
   }

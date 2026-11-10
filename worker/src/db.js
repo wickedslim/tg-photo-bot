@@ -106,14 +106,34 @@ export function touchKey(db, userId, now, cursor) {
 
 // ── Архив (старые фото командой «Архив») ──
 export function archiveInfo(db, userId) {
-  return db.prepare('SELECT cursor, used, (SELECT COUNT(*) FROM photos WHERE user_id = ?1 AND source = ?2) AS count FROM archive_progress WHERE user_id = ?1').bind(userId, 'archive').first();
+  return db
+    .prepare('SELECT cursor, used, moved, stall, warned, (SELECT COUNT(*) FROM photos WHERE user_id = ?1 AND source = ?2) AS count FROM archive_progress WHERE user_id = ?1')
+    .bind(userId, 'archive')
+    .first();
 }
 
+// Отметка сдвинулась вперёд — запоминаем когда и сбрасываем счётчик запусков без движения.
+// (В SET все столбцы — ещё старые значения строки.)
 export function touchArchive(db, userId, now, cursor) {
   return db
-    .prepare('INSERT INTO archive_progress (user_id, cursor, used) VALUES (?1, ?3, ?2) ON CONFLICT (user_id) DO UPDATE SET used = ?2, cursor = MAX(COALESCE(cursor, ?3), ?3)')
+    .prepare(
+      `INSERT INTO archive_progress (user_id, cursor, used, moved) VALUES (?1, ?3, ?2, ?2) ON CONFLICT (user_id) DO UPDATE SET
+         used = ?2,
+         moved = CASE WHEN cursor IS NULL OR ?3 > cursor THEN ?2 ELSE moved END,
+         stall = CASE WHEN cursor IS NULL OR ?3 > cursor THEN 0 ELSE stall END,
+         cursor = MAX(COALESCE(cursor, ?3), ?3)`,
+    )
     .bind(userId, now, cursor)
     .run();
+}
+
+export function setArchiveStall(db, userId, stall, warned) {
+  return db.prepare('UPDATE archive_progress SET stall = ?, warned = ? WHERE user_id = ?').bind(stall, warned ?? null, userId).run();
+}
+
+// Человек сам решил перешагнуть место, где архив застрял: продолжаем с выбранной даты.
+export function skipArchive(db, userId, now, cursor) {
+  return db.prepare('UPDATE archive_progress SET cursor = ?, moved = ?, stall = 0 WHERE user_id = ? AND cursor < ?').bind(cursor, now, userId, cursor).run();
 }
 
 // Есть ли уже фото, снятое в ту же секунду. Без withArchive смотрим только загруженные НЕ архивом

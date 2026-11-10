@@ -114,6 +114,9 @@ export const storage = {
   },
 };
 
+// iPhone или iPad: только там есть «Быстрые команды».
+export const isIOS = inTelegram ? tg.platform === 'ios' : /iPhone|iPad/.test(navigator.userAgent);
+
 export function openExternal(url) {
   if (inTelegram) tg.openLink(url);
   else window.open(url, '_blank', 'noopener');

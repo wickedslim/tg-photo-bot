@@ -20,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto, setArchiveStall, skipArchive } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -75,6 +75,7 @@ async function route(request, env, ctx) {
   if (pathname === '/api/auto/next' && request.method === 'GET') return autoNext(request, env, url);
   if (pathname === '/api/auto/settings' && request.method === 'POST') return autoSettingsRoute(request, env);
   if (pathname === '/api/auto/now' && request.method === 'POST') return autoNow(request, env);
+  if (pathname === '/api/auto/skip' && request.method === 'POST') return autoSkip(request, env);
   const pv = /^\/api\/photo\/(\d{1,15})\/preview$/.exec(pathname);
   if (pv && request.method === 'POST') return previewRoute(request, env, Number(pv[1]));
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
@@ -622,7 +623,7 @@ async function autoKey(request, env, url) {
   if (request.method === 'GET') {
     const info = await keyInfo(env.DB, uid);
     const a = await archiveInfo(env.DB, uid);
-    const archive = a ? { cursor: a.cursor, used: a.used, count: a.count || 0, done: archiveDone(a, info) } : null;
+    const archive = a ? { cursor: a.cursor, used: a.used, moved: a.moved ?? null, count: a.count || 0, done: archiveDone(a, info), stuck: archiveStuck(a, info, Date.now()) } : null;
     const { original, archive: withArchive } = await autoSettings(env.DB, uid);
     return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive, settings: { original, archive: withArchive } });
   }
@@ -665,6 +666,13 @@ async function archiveSince(request, env) {
 }
 
 const archiveDone = (a, key) => Boolean(key && a?.cursor != null && a.cursor >= key.created);
+// Архив застрял: несколько запусков подряд дошли до сервера, а отметка не сдвинулась, и так уже больше суток.
+// Обычно это значит, что iPhone зависает на каком-то снимке сразу после отметки. Запуски, которые до сервера
+// не дошли (Telegram открыли на секунду), не считаются: по ним не понять, застрял архив или нет.
+const STUCK_RUNS = 3;
+const STUCK_AFTER = 24 * 3600 * 1000;
+const archiveStuck = (a, key, now) => Boolean(a && a.cursor != null && !archiveDone(a, key) && (a.stall || 0) >= STUCK_RUNS && now - (a.moved ?? a.used ?? now) >= STUCK_AFTER);
+const fmtDayRu = (ms) => new Date(ms).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).replace(/\s*г\.$/, '');
 const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
 // Команда запускается при каждом открытии Telegram, а новые снимки проверяем раз в 12 часов: так они уходят
@@ -699,6 +707,7 @@ async function autoNext(request, env, url) {
     if (afterOld ? now - s.lastNew < NEW_EVERY : noNew) {
       const a = await archiveInfo(env.DB, uid);
       if (!archiveDone(a, row)) {
+        if (a) await noteStall(env, uid, a, s, row, now);
         stage = 'archive';
         since = a?.cursor != null ? beforeMinute(a.cursor) : Date.UTC(1900, 0, 1);
       }
@@ -722,6 +731,47 @@ async function autoNext(request, env, url) {
     upload: `${base}/api/upload${stage === 'archive' ? '?archive=1' : ''}`,
     mode: s.original ? 'doc' : 'photo',
   });
+}
+
+// Прошлый запуск со старыми фото что-то прислал (хоть один снимок — загруженный или пропущенный), а отметка
+// с тех пор не сдвинулась — плюс один запуск без движения. Когда архив застрял, бот пишет об этом один раз.
+async function noteStall(env, uid, a, s, key, now) {
+  if (s.lastArchive == null || (a.used ?? 0) <= s.lastArchive || (a.moved ?? 0) >= s.lastArchive) return;
+  const stall = (a.stall || 0) + 1;
+  const warn = archiveStuck({ ...a, stall }, key, now) && a.warned !== a.cursor;
+  await setArchiveStall(env.DB, uid, stall, warn ? a.cursor : a.warned);
+  if (!warn) return;
+  const text =
+    `Старые фото перестали загружаться: архив больше суток стоит на ${fmtDayRu(a.cursor)}. ` +
+    'Похоже, iPhone зависает на снимке сразу после этой даты.\n\n' +
+    'В галерее, в разделе «…» → «Автозагрузка с iPhone», можно продолжить архив с более поздней даты.';
+  const body = { chat_id: uid, text };
+  if (env.WEBAPP_URL) body.reply_markup = { inline_keyboard: [[{ text: 'Открыть галерею', web_app: { url: env.WEBAPP_URL } }]] };
+  try {
+    await callApi(env.BOT_TOKEN, 'sendMessage', body);
+  } catch {
+    // Не дошло — не страшно: предупреждение есть и в галерее.
+  }
+}
+
+// Перешагнуть место, где архив застрял: дальше он пойдёт с выбранной даты. Снимки до неё архив пропустит.
+async function autoSkip(request, env) {
+  const uid = await authUser(request, env);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new HttpError(400, 'bad_request', 'Не удалось прочитать дату');
+  }
+  const a = await archiveInfo(env.DB, uid);
+  if (!a || a.cursor == null) throw new HttpError(400, 'bad_request', 'Старые фото ещё не начали загружаться');
+  const key = await keyInfo(env.DB, uid);
+  let from = Number(body?.from);
+  if (!Number.isFinite(from) || from <= a.cursor) throw new HttpError(400, 'bad_date', 'Выберите дату позже той, где архив остановился');
+  if (key && from > key.created) from = key.created;
+  await skipArchive(env.DB, uid, Date.now(), from);
+  const b = await archiveInfo(env.DB, uid);
+  return json(request, env, { ok: true, archive: { cursor: b.cursor, used: b.used, moved: b.moved, count: b.count || 0, done: archiveDone(b, key), stuck: archiveStuck(b, key, Date.now()) } });
 }
 
 async function autoNow(request, env) {

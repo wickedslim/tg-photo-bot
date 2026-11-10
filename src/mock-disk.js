@@ -122,7 +122,7 @@ export class MockDisk {
 
   async autoKeyInfo() {
     const settings = (this.autoSettings ||= { original: false, archive: false });
-    return { exists: Boolean(this.key), created: this.key?.created, used: this.key ? Date.now() - 3600000 : null, cursor: this.key ? Date.now() - 7200000 : null, base: 'https://tg-photo-bot.example.workers.dev', archive: this.key ? { count: 3200, cursor: Date.UTC(2019, 2, 14), used: Date.now() - 600000, done: false } : null, settings };
+    return { exists: Boolean(this.key), created: this.key?.created, used: this.key ? Date.now() - 3600000 : null, cursor: this.key ? Date.now() - 7200000 : null, base: 'https://tg-photo-bot.example.workers.dev', archive: this.key ? (this.archive ||= { count: 3200, cursor: Date.UTC(2019, 2, 14), used: Date.now() - 600000, done: false, stuck: /stuck/.test(location.search) }) : null, settings };
   }
   async createAutoKey() {
     const base = 'https://tg-photo-bot.example.workers.dev';
@@ -131,6 +131,10 @@ export class MockDisk {
   }
   async uploadNow() {
     return { ok: true };
+  }
+  async skipArchive(from) {
+    this.archive = { ...this.archive, cursor: from, stuck: false };
+    return { ok: true, archive: this.archive };
   }
 
   async saveAutoSettings(settings) {

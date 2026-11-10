@@ -343,6 +343,8 @@ input { font: inherit; color: inherit; }
 .steps a { color: var(--tint); }
 .group-foot.first { padding: 4px 4px 0; font-size: 15px; }
 .notice + .copy-row { margin-top: 6px; }
+.notice.stuck { margin: 22px 0 8px; }
+.date-input { font: inherit; color: var(--tint); background: none; border: 0; padding: 0; text-align: right; min-width: 0; }
 .about .row { display: block; font-size: 15px; color: var(--muted); }
 .v-info-caption { font-size: 15px; padding: 6px 0 2px; white-space: pre-wrap; word-break: break-word; }
 

@@ -54,6 +54,9 @@ function fakeTelegram(request) {
       if (Number(body.message_id) === 10) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be edited" });
       const file = { file_id: 'stub_' + media.type, file_unique_id: 'stubu' };
       return Response.json({ ok: true, result: { message_id: Number(body.message_id), date: 1, chat: { id: Number(body.chat_id), type: 'private' }, ...(media.type === 'photo' ? { photo: [{ ...file, width: 320, height: 320 }] } : { document: file }), caption: media.caption } });
+    } else if (method === 'sendMessage') {
+      sent.push({ method, chat_id: Number(body.chat_id), text: body.text, markup: body.reply_markup });
+      return Response.json({ ok: true, result: msg({ text: body.text }) });
     } else if (method === 'sendMediaGroup') result = JSON.parse(body.media).map(() => msg({ photo: photo('g' + msgId) }));
     else return Response.json({ ok: false, error_code: 400, description: 'unknown method' });
     sent.push({ method, chat_id: Number(body.chat_id) });
@@ -683,4 +686,71 @@ test('CORS: чужой сайт не получает разрешения', asy
   assert.equal(r.headers.get('access-control-allow-origin'), null);
   const ok = await mf.dispatchFetch('http://worker/api/list', { method: 'OPTIONS', headers: { origin: ORIGIN } });
   assert.equal(ok.headers.get('access-control-allow-origin'), ORIGIN);
+});
+
+test('архив застрял: бот предупреждает один раз, в галерее можно продолжить с более поздней даты', async () => {
+  const U = 7171;
+  const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  const auth = { authorization: 'Key ' + created.key };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const next = async () => {
+    await tick();
+    return (await api('/api/auto/next', { headers: auth })).json();
+  };
+  const send = async (taken, name) => {
+    await tick();
+    const f = new FormData();
+    f.set('file', jpeg(name));
+    f.set('taken', taken);
+    return (await api('/api/upload?archive=1', { headers: auth, method: 'POST', body: f })).json();
+  };
+  const db = await mf.getD1Database('DB');
+  const row = () => db.prepare('SELECT cursor, stall, warned FROM archive_progress WHERE user_id = ?').bind(U).first();
+  const info = async () => (await (await api('/api/auto/key', { user: U })).json()).archive;
+  const warns = () => sent.filter((m) => m.method === 'sendMessage' && m.chat_id === U);
+  await api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify({ archive: true }) });
+
+  assert.equal((await next()).stage, 'new');
+  assert.equal((await next()).stage, 'archive');
+  await send('2015-03-01T10:00:00Z', 'stuck-1'); // архив сдвинулся
+
+  // дальше каждый запуск присылает тот же снимок (повтор) и зависает: отметка стоит
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await next()).stage, 'archive');
+    await send('2015-03-01T10:00:00Z', 'stuck-1');
+  }
+  assert.equal((await row()).stall, 3);
+  // этот запуск видит, что прошлый прислал снимок, а отметка стоит, — плюс один
+  await next();
+  assert.equal((await row()).stall, 4);
+  // а запуск, который до сервера ничего не прислал (Telegram открыли на секунду), не считается
+  await next();
+  assert.equal((await row()).stall, 4);
+  await send('2015-03-01T10:00:00Z', 'stuck-1');
+  // но пока не прошли сутки, это ещё не «застрял»
+  assert.equal(warns().length, 0);
+  assert.equal((await info()).stuck, false);
+
+  await db.prepare('UPDATE archive_progress SET moved = ? WHERE user_id = ?').bind(Date.now() - 25 * 3600 * 1000, U).run();
+  await next();
+  assert.equal(warns().length, 1);
+  assert.match(warns()[0].text, /1 марта 2015/);
+  assert.ok(warns()[0].markup?.inline_keyboard?.[0]?.[0]?.web_app);
+  const a = await info();
+  assert.equal(a.stuck, true);
+  // про то же место второй раз не пишет
+  await send('2015-03-01T10:00:00Z', 'stuck-1');
+  await next();
+  assert.equal(warns().length, 1);
+
+  // «Продолжить с даты»: только из галереи, только вперёд
+  const skip = (from, opts = { user: U }) => api('/api/auto/skip', { ...opts, method: 'POST', body: JSON.stringify({ from }) });
+  assert.equal((await skip(Date.UTC(2015, 5, 1), { headers: auth })).status, 401);
+  assert.equal((await skip(Date.UTC(2014, 0, 1))).status, 400);
+  const r = await (await skip(Date.UTC(2015, 5, 1))).json();
+  assert.deepEqual({ cursor: r.archive.cursor, stuck: r.archive.stuck }, { cursor: Date.UTC(2015, 5, 1), stuck: false });
+  assert.equal((await next()).since, '2015-05-31T23:59:30Z');
+  // дальше архив идёт как обычно; застрянет снова в другом месте — бот напишет снова
+  await send('2015-06-02T10:00:00Z', 'after-skip');
+  assert.equal((await row()).stall, 0);
 });

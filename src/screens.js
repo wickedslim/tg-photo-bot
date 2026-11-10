@@ -1,5 +1,5 @@
 // Настройки (шторка), автозагрузка, экраны-заглушки и всплывающие сообщения.
-import { pushBack, haptic, openExternal } from './tg.js';
+import { pushBack, haptic, openExternal, isIOS } from './tg.js';
 import { storageUsage } from './store.js';
 import { photosCount } from './grid.js';
 
@@ -155,6 +155,14 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
 // Ссылка iCloud на готовую команду «Фото в Telegram» (как её получить — docs/shortcut.md). Пока ссылки нет,
 // экран предлагает собрать команду по инструкции.
 export const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/4dfa91ed4d9543fbb33801c19c716bc6';
+// Страница, которая открывает «Команды» и запускает «Фото в Telegram». Из Telegram нельзя открыть
+// адрес shortcuts:// напрямую — только обычную ссылку, поэтому идём через свою страницу (public/run.html).
+const RUN_PAGE = new URL('run.html', location.href.split('#')[0]).href;
+const day = (ms) => fmtDay.format(ms).replace(/ г\.$/, '');
+const ymd = (ms) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export async function showAutoUpload({ api }) {
   const s = openSheet('Автозагрузка с iPhone', '<div class="auto-body"><div class="empty-inline"><span class="spinner small"></span></div></div>');
@@ -189,7 +197,21 @@ export async function showAutoUpload({ api }) {
     if (!a) return '<div class="row"><span>Старые фото</span><span class="muted">ещё не начали</span></div>';
     return `
       <div class="row"><span>Загружено старых</span><span class="muted">${(a.count || 0).toLocaleString('ru')} фото</span></div>
-      <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? fmtDay.format(a.cursor).replace(/ г\.$/, '') : '—'}</span></div>`;
+      <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? day(a.cursor) : '—'}</span></div>`;
+  };
+
+  // Архив застрял: сервер видит, что запуски доходят до него, а отметка больше суток стоит на месте.
+  // Перешагнуть это место решает человек: снимки до выбранной даты архив пропустит.
+  const stuckBlock = (a) => {
+    if (!a?.stuck || a.cursor == null) return '';
+    const from = a.cursor + 86400000;
+    return `
+      <div class="notice stuck">Старые фото не загружаются больше суток: архив стоит на <b>${day(a.cursor)}</b>. Похоже, iPhone зависает на снимке сразу после этой даты.</div>
+      <div class="group">
+        <label class="row"><span>Продолжить с</span><input type="date" class="date-input" id="skip-date" value="${ymd(from)}" min="${ymd(from)}" max="${ymd(Date.now())}"></label>
+        <button class="row link" id="skip">Продолжить архив с этой даты</button>
+      </div>
+      <div class="group-foot">Снимки до этой даты архив пропустит. Нужные можно добавить вручную кнопкой «+» в галерее.</div>`;
   };
 
   // Настройки хранятся на сервере, команда спрашивает их перед каждым запуском — менять её не нужно.
@@ -198,7 +220,7 @@ export async function showAutoUpload({ api }) {
     <div class="group-title">Настройки</div>
     <div class="group">
       <label class="row switch-row"><span>Оригиналы без сжатия</span><input type="checkbox" class="switch" data-k="original" ${settings.original ? 'checked' : ''}></label>
-      <label class="row switch-row"><span>Загрузить и старые фото</span><input type="checkbox" class="switch" data-k="archive" ${settings.archive ? 'checked' : ''}></label>
+      <label class="row switch-row"><span>Загрузить старые фото</span><input type="checkbox" class="switch" data-k="archive" ${settings.archive ? 'checked' : ''}></label>
       ${settings.archive ? archiveRows(info?.archive) : ''}
     </div>
     <div class="group-foot">${
@@ -209,9 +231,29 @@ export async function showAutoUpload({ api }) {
       settings.archive
         ? 'Сначала загружаются новые снимки, а когда новых нет — старые, от самых старых, по 100 за запуск. Чтобы быстрее — поставьте телефон на зарядку и запустите команду вручную несколько раз. Повторов не будет.'
         : 'Без старых фото загружаются только снимки, сделанные после подключения.'
-    }</div>`;
+    }</div>
+    ${settings.archive ? stuckBlock(info?.archive) : ''}`;
 
-  const wireSwitches = () =>
+  const redrawSettings = () => {
+    body.querySelector('.auto-settings').innerHTML = settingsHtml();
+    wireSwitches();
+  };
+
+  const wireSwitches = () => {
+    body.querySelector('#skip')?.addEventListener('click', async (e) => {
+      const [y, m, d] = (body.querySelector('#skip-date')?.value || '').split('-').map(Number);
+      if (!y) return toast('Выберите дату');
+      e.currentTarget.disabled = true;
+      try {
+        const r = await api.skipArchive(new Date(y, m - 1, d).getTime());
+        info = { ...info, archive: r.archive };
+        haptic('medium');
+        toast(`Архив продолжится с ${day(r.archive.cursor)}`);
+      } catch (err) {
+        toast(err.message);
+      }
+      redrawSettings();
+    });
     body.querySelectorAll('.switch').forEach((sw) =>
       sw.addEventListener('change', async () => {
         const prev = settings;
@@ -224,10 +266,10 @@ export async function showAutoUpload({ api }) {
           toast(err.message);
         }
         // Перерисовываем только настройки: подписи и прогресс старых фото зависят от переключателей.
-        body.querySelector('.auto-settings').innerHTML = settingsHtml();
-        wireSwitches();
+        redrawSettings();
       }),
     );
+  };
 
   // Ключ показывается один раз: сразу после создания предлагаем добавить с ним команду.
   const renderConnect = (k) => {
@@ -264,7 +306,11 @@ export async function showAutoUpload({ api }) {
       body.innerHTML = `
         ${statusRows(k)}
         <div class="group"><button class="row link" id="now">Загрузить сейчас</button></div>
-        <div class="group-foot">Снимает паузу в 12 часов: новые снимки уйдут при следующем открытии Telegram.</div>
+        <div class="group-foot">${
+          isIOS
+            ? 'Снимает паузу в 12 часов и сразу запускает команду «Фото в Telegram» — iPhone спросит, открыть ли «Команды». Если вы переименовали команду, верните ей это название.'
+            : 'Снимает паузу в 12 часов: новые снимки уйдут при следующем открытии Telegram на iPhone.'
+        }</div>
         ${settingsBlock()}
         ${automation}
         <div class="group">
@@ -299,7 +345,9 @@ export async function showAutoUpload({ api }) {
       try {
         await api.uploadNow();
         haptic('light');
-        toast('Готово. Закройте Telegram и откройте снова');
+        // Сначала сервер снимает паузу, потом iPhone запускает команду — иначе она получила бы «ничего не делать».
+        if (isIOS) openExternal(RUN_PAGE);
+        else toast('Готово. Новые снимки уйдут при следующем открытии Telegram на iPhone');
       } catch (err) {
         toast(err.message);
       }
