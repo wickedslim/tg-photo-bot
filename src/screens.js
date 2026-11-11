@@ -154,7 +154,9 @@ export function showSettings({ disk, count, indexer, onAuto, onReindex, onClearC
 // ── Автозагрузка с iPhone: личный ключ и готовая «Быстрая команда» ──
 // Ссылка iCloud на готовую команду «Фото в Telegram» (как её получить — docs/shortcut.md). Пока ссылки нет,
 // экран предлагает собрать команду по инструкции.
-export const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/4dfa91ed4d9543fbb33801c19c716bc6';
+export const SHORTCUT_LINK = 'https://www.icloud.com/shortcuts/f1c689a10ddb41cdb41788041c603f59';
+// Версия команды по этой ссылке. Меняйте вместе со ссылкой: у кого команда старее, галерея предложит обновить.
+export const SHORTCUT_VERSION = 2;
 // Страница, которая открывает «Команды» и запускает «Фото в Telegram». Из Telegram нельзя открыть
 // адрес shortcuts:// напрямую — только обычную ссылку, поэтому идём через свою страницу (public/run.html).
 const RUN_PAGE = new URL('run.html', location.href.split('#')[0]).href;
@@ -167,7 +169,7 @@ const ymd = (ms) => {
 export async function showAutoUpload({ api }) {
   const s = openSheet('Автозагрузка с iPhone', '<div class="auto-body"><div class="empty-inline"><span class="spinner small"></span></div></div>');
   const body = s.q('.auto-body');
-  let settings = { original: false, archive: false };
+  let settings = { original: false, archive: false, wifiOnly: true };
   let info = null;
 
   const copyRow = (label, value) => `
@@ -180,38 +182,68 @@ export async function showAutoUpload({ api }) {
     <ol class="steps">
       <li>Откройте «Команды» → вкладка <b>«Автоматизация»</b> → <b>«+»</b>.</li>
       <li><b>«Приложение»</b> → выберите <b>«Telegram»</b> → отметьте <b>«Открыто»</b> → <b>«Запускать сразу»</b> → <b>«Далее»</b> → <b>«Новая пустая автоматизация»</b>.</li>
-      <li>Добавьте действие <b>«Получить сведения о сети»</b>: сеть <b>«Wi‑Fi»</b>, сведения <b>«Имя сети»</b>.</li>
+      ${
+        SHORTCUT_VERSION >= 2
+          ? '<li>Добавьте действие <b>«Запустить команду»</b> → <b>«Фото в Telegram»</b>.</li>'
+          : `<li>Добавьте действие <b>«Получить сведения о сети»</b>: сеть <b>«Wi‑Fi»</b>, сведения <b>«Имя сети»</b>.</li>
       <li>Добавьте действие <b>«Если»</b>: <b>«Сведения о сети»</b> → <b>«имеет любое значение»</b>.</li>
-      <li>Внутрь «Если» добавьте действие <b>«Запустить команду»</b> → <b>«Фото в Telegram»</b>.</li>
+      <li>Внутрь «Если» добавьте действие <b>«Запустить команду»</b> → <b>«Фото в Telegram»</b>.</li>`
+      }
       <li>Один раз: «Настройки» → «Приложения» → «Команды» → «Дополнительно» → включите <b>«Разрешить отправку больших объёмов данных»</b>. Без этого iPhone пропускает за раз только одно фото.</li>
     </ol>
-    <div class="group-foot">Новые снимки уходят, когда вы открываете Telegram и телефон подключён к Wi‑Fi. Новые снимки проверяются раз в 12 часов, чтобы не нагружать телефон. Не блокируйте телефон, пока идёт отправка: на заблокированном экране iPhone её прерывает. В первый раз iPhone спросит, можно ли отправлять фото на сервер, — ответьте <b>«Разрешать всегда»</b>.</div>`;
+    <div class="group-foot">Новые снимки уходят, когда вы открываете Telegram${SHORTCUT_VERSION >= 2 ? ' (по мобильной сети — только если выключить «Только по Wi‑Fi»)' : ' и телефон подключён к Wi‑Fi'}. Новые снимки проверяются раз в 12 часов, чтобы не нагружать телефон. Не блокируйте телефон, пока идёт отправка: на заблокированном экране iPhone её прерывает. В первый раз iPhone спросит, можно ли отправлять фото на сервер, — ответьте <b>«Разрешать всегда»</b>.</div>`;
 
+  // Последний запуск. Дошёл ли он до конца, знает только команда версии 2: она сообщает об этом серверу.
+  const runState = (r) => {
+    if (!r || r.version < 2) return '';
+    if (r.done) return ' · завершён';
+    return Date.now() - r.at < 10 * 60000 ? ' · идёт' : ' · прервался';
+  };
   const statusRows = (k) => `
     <div class="group">
-      <div class="row"><span>Последний запуск</span><span class="muted">${k.used ? fmtWhen.format(k.used) : 'ещё не было'}</span></div>
-      <div class="row"><span>Последнее фото снято</span><span class="muted">${k.cursor ? fmtWhen.format(k.cursor) : '—'}</span></div>
+      <div class="row"><span>Последний запуск</span><span class="muted">${k.run?.at ? fmtWhen.format(k.run.at) + runState(k.run) : k.used ? fmtWhen.format(k.used) : 'ещё не было'}</span></div>
+      <div class="row"><span>Последняя загрузка</span><span class="muted">${k.used ? fmtWhen.format(k.used) : '—'}</span></div>
     </div>`;
+
+  // Команда старее той, что по ссылке: предлагаем поставить новую (с новым ключом — старый в ней не сохранить).
+  const updateBlock = (k) => {
+    if (!SHORTCUT_LINK || !k.run || k.run.version >= SHORTCUT_VERSION) return '';
+    return `
+      <div class="notice">Вышла новая версия команды «Фото в Telegram»: она сама пропускает снимки, на которых iPhone зависает, не тратит время на видео и уже загруженное и умеет «Только по Wi‑Fi».</div>
+      <ol class="steps">
+        <li>В «Командах» удалите старую команду «Фото в Telegram».</li>
+        <li>Нажмите <b>«Обновить команду»</b> ниже и добавьте новую — ключ скопируется сам.</li>
+        <li>В автоматизации «Telegram» оставьте одно действие: <b>«Запустить команду»</b> → <b>«Фото в Telegram»</b> (проверка Wi‑Fi теперь в настройках ниже).</li>
+      </ol>
+      <div class="group"><button class="row link" id="update">Обновить команду</button></div>
+      <div class="group-foot">Загрузка продолжится с того же места, повторов не будет.</div>`;
+  };
+
+  // Снимки, на которых iPhone зависал: сервер их пропустил, чтобы не вставали остальные.
+  const skippedBlock = (k) => {
+    if (!k.skipped?.length) return '';
+    return `
+      <div class="group-title">Пропущены — iPhone на них зависал</div>
+      <div class="group">${k.skipped.map((x) => `<div class="row"><span>${esc(x.text)}</span></div>`).join('')}</div>
+      <div class="group-foot">Если какой-то из этих снимков нужен — найдите его в «Фото» по дате и добавьте вручную кнопкой «+» в галерее.</div>`;
+  };
 
   const archiveRows = (a) => {
     if (!a) return '<div class="row"><span>Старые фото</span><span class="muted">ещё не начали</span></div>';
+    // «Дошли до» можно поменять: вперёд — перешагнуть снимки, назад — пройти заново (повторов не будет).
     return `
       <div class="row"><span>Загружено старых</span><span class="muted">${(a.count || 0).toLocaleString('ru')} фото</span></div>
-      <div class="row"><span>${a.done ? 'Готово' : 'Дошли до'}</span><span class="muted">${a.done ? 'всё загружено' : a.cursor != null ? day(a.cursor) : '—'}</span></div>`;
+      ${a.done ? '<div class="row"><span>Готово</span><span class="muted">всё загружено</span></div>' : ''}
+      <label class="row"><span>${a.done ? 'Пройти заново с' : 'Дошли до'}</span><input type="date" class="date-input" id="skip-date" value="${a.cursor != null && !a.done ? ymd(a.cursor) : ''}" min="1990-01-01" max="${ymd(Date.now())}"></label>
+      <button class="row link" id="skip" hidden>Продолжить с этой даты</button>`;
   };
 
   // Архив застрял: сервер видит, что запуски доходят до него, а отметка больше суток стоит на месте.
-  // Перешагнуть это место решает человек: снимки до выбранной даты архив пропустит.
+  // Перешагнуть это место решает человек — датой в «Дошли до».
   const stuckBlock = (a) => {
     if (!a?.stuck || a.cursor == null) return '';
-    const from = a.cursor + 86400000;
     return `
-      <div class="notice stuck">Старые фото не загружаются больше суток: архив стоит на <b>${day(a.cursor)}</b>. Похоже, iPhone зависает на снимке сразу после этой даты.</div>
-      <div class="group">
-        <label class="row"><span>Продолжить с</span><input type="date" class="date-input" id="skip-date" value="${ymd(from)}" min="${ymd(from)}" max="${ymd(Date.now())}"></label>
-        <button class="row link" id="skip">Продолжить архив с этой даты</button>
-      </div>
-      <div class="group-foot">Снимки до этой даты архив пропустит. Нужные можно добавить вручную кнопкой «+» в галерее.</div>`;
+      <div class="notice stuck">Старые фото не загружаются больше суток: архив стоит на <b>${day(a.cursor)}</b>. Похоже, iPhone зависает на снимке сразу после этой даты. Поставьте в «Дошли до» дату позже — снимки до неё архив пропустит, нужные можно добавить вручную кнопкой «+».</div>`;
   };
 
   // Настройки хранятся на сервере, команда спрашивает их перед каждым запуском — менять её не нужно.
@@ -222,6 +254,7 @@ export async function showAutoUpload({ api }) {
       <label class="row switch-row"><span>Оригиналы без сжатия</span><input type="checkbox" class="switch" data-k="original" ${settings.original ? 'checked' : ''}></label>
       <label class="row switch-row"><span>Загрузить старые фото</span><input type="checkbox" class="switch" data-k="archive" ${settings.archive ? 'checked' : ''}></label>
       ${settings.archive ? archiveRows(info?.archive) : ''}
+      ${SHORTCUT_VERSION >= 2 ? `<label class="row switch-row"><span>Только по Wi‑Fi</span><input type="checkbox" class="switch" data-k="wifiOnly" ${settings.wifiOnly !== false ? 'checked' : ''}></label>` : ''}
     </div>
     <div class="group-foot">${
       settings.original
@@ -229,8 +262,14 @@ export async function showAutoUpload({ api }) {
         : 'Фото сжимаются на телефоне до 2560 px, как обычные фото в Telegram: так загрузка быстрее.'
     } ${
       settings.archive
-        ? 'Сначала загружаются новые снимки, а когда новых нет — старые, от самых старых, по 100 за запуск. Чтобы быстрее — поставьте телефон на зарядку и запустите команду вручную несколько раз. Повторов не будет.'
+        ? 'Сначала загружаются новые снимки, а когда новых нет — старые, от самых старых, по 100 за запуск. Чтобы быстрее — поставьте телефон на зарядку и запустите команду вручную несколько раз. Повторов не будет. Дату «Дошли до» можно поменять: позже — пропустить снимки до неё, раньше — пройти заново.'
         : 'Без старых фото загружаются только снимки, сделанные после подключения.'
+    } ${
+      SHORTCUT_VERSION < 2
+        ? ''
+        : settings.wifiOnly !== false
+        ? 'По мобильной сети фото не уходят — кроме «Загрузить сейчас».'
+        : 'Фото уходят и по мобильной сети — следите за трафиком, особенно с оригиналами.'
     }</div>
     ${settings.archive ? stuckBlock(info?.archive) : ''}`;
 
@@ -240,6 +279,10 @@ export async function showAutoUpload({ api }) {
   };
 
   const wireSwitches = () => {
+    body.querySelector('#skip-date')?.addEventListener('change', () => {
+      const btn = body.querySelector('#skip');
+      if (btn) btn.hidden = false;
+    });
     body.querySelector('#skip')?.addEventListener('click', async (e) => {
       const [y, m, d] = (body.querySelector('#skip-date')?.value || '').split('-').map(Number);
       if (!y) return toast('Выберите дату');
@@ -278,7 +321,7 @@ export async function showAutoUpload({ api }) {
       ? `
         <div class="group-title">1. Добавьте команду</div>
         <button class="big-btn" id="add" data-v="${esc(key)}">Добавить команду</button>
-        <div class="setup-hint">Ключ скопируется сам. Когда iPhone спросит ключ, нажмите на поле → <b>«Вставить»</b> → <b>«Добавить команду»</b>.</div>
+        <div class="setup-hint">Ключ скопируется сам. Когда iPhone спросит ключ, нажмите на поле → <b>«Вставить»</b> → <b>«Добавить команду»</b>. Если старая команда «Фото в Telegram» ещё есть — сначала удалите её, иначе новая получит другое имя.</div>
         ${copyRow('Ключ (если не вставился)', key)}
         ${automation.replace('Запускать автоматически', '2. Запускать автоматически')}
         ${settingsBlock()}
@@ -304,6 +347,7 @@ export async function showAutoUpload({ api }) {
         <div class="setup-hint">Займёт пару минут: добавить готовую команду и сделать автоматизацию. Вы получите личный ключ — по нему можно только загружать фото в ваш чат, смотреть их нельзя.</div>`;
     } else {
       body.innerHTML = `
+        ${updateBlock(k)}
         ${statusRows(k)}
         <div class="group"><button class="row link" id="now">Загрузить сейчас</button></div>
         <div class="group-foot">${
@@ -312,6 +356,7 @@ export async function showAutoUpload({ api }) {
             : 'Снимает паузу в 12 часов: новые снимки уйдут при следующем открытии Telegram на iPhone.'
         }</div>
         ${settingsBlock()}
+        ${skippedBlock(k)}
         ${automation}
         <div class="group">
           <button class="row link" id="create">Подключить заново (новый ключ)</button>
@@ -363,6 +408,17 @@ export async function showAutoUpload({ api }) {
       openExternal(GUIDE_URL);
     });
     wireSwitches();
+    body.querySelector('#update')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        renderConnect(await api.createAutoKey());
+        haptic('medium');
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false;
+      }
+    });
     body.querySelector('#create')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
       try {

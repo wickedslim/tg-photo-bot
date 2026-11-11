@@ -121,8 +121,11 @@ export class MockDisk {
   }
 
   async autoKeyInfo() {
-    const settings = (this.autoSettings ||= { original: false, archive: false });
-    return { exists: Boolean(this.key), created: this.key?.created, used: this.key ? Date.now() - 3600000 : null, cursor: this.key ? Date.now() - 7200000 : null, base: 'https://tg-photo-bot.example.workers.dev', archive: this.key ? (this.archive ||= { count: 3200, cursor: Date.UTC(2019, 2, 14), used: Date.now() - 600000, done: false, stuck: /stuck/.test(location.search) }) : null, settings };
+    const settings = (this.autoSettings ||= { original: false, archive: false, wifiOnly: true });
+    // ?oldcmd — команда старой версии (галерея предлагает обновить), ?skipped — есть пропущенные снимки
+    const run = this.key ? { version: /oldcmd/.test(location.search) ? 1 : 2, net: 'wifi', at: Date.now() - 1800000, done: !/oldcmd/.test(location.search) } : null;
+    const skipped = /skipped/.test(location.search) ? [{ taken: '2022-09-23T15:10:00+04:00', text: '23 сентября 2022, 15:10', at: Date.now() - 86400000 }] : [];
+    return { exists: Boolean(this.key), created: this.key?.created, used: this.key ? Date.now() - 3600000 : null, cursor: this.key ? Date.now() - 7200000 : null, base: 'https://tg-photo-bot.example.workers.dev', archive: this.key ? (this.archive ||= { count: 3200, cursor: Date.UTC(2019, 2, 14), used: Date.now() - 600000, done: false, stuck: /stuck/.test(location.search) }) : null, settings, run, skipped };
   }
   async createAutoKey() {
     const base = 'https://tg-photo-bot.example.workers.dev';
