@@ -325,7 +325,7 @@ test('готовая команда: задание от сервера, нас�
   // включили оригиналы и старые фото
   assert.equal((await settings({ original: true, archive: true })).status, 200);
   let info = await (await api('/api/auto/key', { user: U })).json();
-  assert.deepEqual(info.settings, { original: true, archive: true });
+  assert.deepEqual(info.settings, { original: true, archive: true, wifiOnly: true });
   // новые фото проверялись только что — этот запуск везёт архив, с самого начала
   t = await next();
   assert.deepEqual({ stage: t.stage, limit: t.limit, mode: t.mode, since: t.since }, { stage: 'archive', limit: 100, mode: 'doc', since: '1900-01-01T00:00:00Z' });
@@ -402,7 +402,7 @@ test('готовая команда: задание от сервера, нас�
   // выключили старые фото, оригиналы оставили
   await settings({ archive: false });
   info = await (await api('/api/auto/key', { user: U })).json();
-  assert.deepEqual(info.settings, { original: true, archive: false });
+  assert.deepEqual(info.settings, { original: true, archive: false, wifiOnly: true });
 
   // скриншоты автозагрузка пропускает (метка в EXIF или в XMP), а кнопкой «Загрузить» — можно
   const shot = (bytes, name) => {
@@ -746,11 +746,114 @@ test('архив застрял: бот предупреждает один ра
   // «Продолжить с даты»: только из галереи, только вперёд
   const skip = (from, opts = { user: U }) => api('/api/auto/skip', { ...opts, method: 'POST', body: JSON.stringify({ from }) });
   assert.equal((await skip(Date.UTC(2015, 5, 1), { headers: auth })).status, 401);
-  assert.equal((await skip(Date.UTC(2014, 0, 1))).status, 400);
+  assert.equal((await skip('завтра')).status, 400);
+  assert.equal((await skip(Date.UTC(1980, 0, 1))).status, 400);
+  // назад тоже можно: архив пройдёт заново, повторов не будет
+  assert.equal((await (await skip(Date.UTC(2014, 0, 1))).json()).archive.cursor, Date.UTC(2014, 0, 1));
   const r = await (await skip(Date.UTC(2015, 5, 1))).json();
   assert.deepEqual({ cursor: r.archive.cursor, stuck: r.archive.stuck }, { cursor: Date.UTC(2015, 5, 1), stuck: false });
   assert.equal((await next()).since, '2015-05-31T23:59:30Z');
   // дальше архив идёт как обычно; застрянет снова в другом месте — бот напишет снова
   await send('2015-06-02T10:00:00Z', 'after-skip');
   assert.equal((await row()).stall, 0);
+});
+
+test('команда версии 2: проверка снимка, видео и повторы отсеиваются, зависший снимок пропускается', async () => {
+  const U = 7272;
+  const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  const auth = { authorization: 'Key ' + created.key };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const next = async (q = '?v=2&net=wifi') => {
+    await tick();
+    return (await api('/api/auto/next' + q, { headers: auth })).json();
+  };
+  const check = async (fields, archive = false) => {
+    await tick();
+    const f = new FormData();
+    for (const [k, v] of Object.entries(fields)) f.set(k, v);
+    return (await api('/api/auto/check' + (archive ? '?archive=1' : ''), { headers: auth, method: 'POST', body: f })).json();
+  };
+  const send = async (fields, name) => {
+    await tick();
+    const f = new FormData();
+    f.set('file', jpeg(name));
+    for (const [k, v] of Object.entries(fields)) f.set(k, v);
+    return (await api('/api/upload', { headers: auth, method: 'POST', body: f })).json();
+  };
+  const info = async () => (await api('/api/auto/key', { user: U })).json();
+  const warns = () => sent.filter((m) => m.method === 'sendMessage' && m.chat_id === U);
+  const soon = new Date(Date.now() + 60000).toISOString();
+
+  // задание для версии 2: куда проверять, куда сообщить о конце, размеры
+  const t = await next();
+  assert.equal(t.stage, 'new');
+  assert.match(t.check, /\/api\/auto\/check$/);
+  assert.match(t.done, /\/api\/auto\/done$/);
+  assert.deepEqual([t.size, t.thumb, t.limit], [2560, 320, 100]);
+
+  // обычный снимок: брать; дошёл — больше не ждём
+  const p1 = { taken: '2026-01-10T12:00:00+04:00', created: soon };
+  assert.deepEqual(await check(p1), { do: 'send' });
+  assert.equal((await send(p1, 'v2-p1')).items.length, 1);
+  // повтор того же снимка (отметка уже за ним) — пропустить, не отправляя файл
+  assert.equal((await check(p1)).why, 'have');
+  // видео и скриншоты — пропустить, даже если фильтры в «Командах» их пропустили
+  assert.equal((await check({ taken: '2026-01-11T10:00:00+04:00', created: soon, type: 'Видео' })).why, 'video');
+  assert.equal((await check({ taken: '2026-01-11T10:00:01+04:00', created: soon, shot: 'Да' })).why, 'screenshot');
+
+  // iPhone зависает на снимке: два запуска взяли его и не прислали — третий его пропускает, бот пишет дату
+  const bad = { taken: '2022-09-23T15:10:00+04:00', created: new Date(Date.now() + 120000).toISOString() };
+  assert.equal((await check(bad)).do, 'send');
+  // в том же запуске повторная проверка не считается
+  assert.equal((await check(bad)).do, 'send');
+  await next();
+  assert.equal((await check(bad)).do, 'send');
+  assert.equal(warns().length, 0);
+  await next();
+  assert.deepEqual(await check(bad), { do: 'skip', why: 'hangs' });
+  assert.equal(warns().length, 1);
+  assert.match(warns()[0].text, /23 сентября 2022, 15:10/);
+  // дальше этот снимок пропускается сразу, бот второй раз не пишет
+  assert.equal((await check(bad)).why, 'hangs');
+  assert.equal(warns().length, 1);
+  // снимок, который дошёл до сервера, зависшим не считается
+  const db = await mf.getD1Database('DB');
+  const pending = async () => (await db.prepare('SELECT pending FROM auto_settings WHERE user_id = ?').bind(U).first()).pending;
+  const ok = { taken: '2026-01-12T09:00:00+04:00', created: new Date(Date.now() + 180000).toISOString() };
+  await next();
+  assert.equal((await check(ok)).do, 'send');
+  assert.ok(await pending());
+  await send(ok, 'v2-ok');
+  assert.equal(await pending(), null);
+
+  // запуск закончен; галерея видит версию, сеть и пропущенные снимки
+  let i = await info();
+  assert.deepEqual({ v: i.run.version, net: i.run.net, done: i.run.done }, { v: 2, net: 'wifi', done: false });
+  assert.equal((await api('/api/auto/done', { headers: auth, method: 'POST' })).status, 200);
+  i = await info();
+  assert.equal(i.run.done, true);
+  assert.deepEqual(i.skipped.map((x) => x.text), ['23 сентября 2022, 15:10']);
+  // старая команда (без v) — версия 1, галерея предложит обновить
+  await next('');
+  assert.equal((await info()).run.version, 1);
+
+  // только по Wi‑Fi (по умолчанию): по мобильной сети — пауза, но сразу после «Загрузить сейчас» — можно
+  assert.equal((await next('?v=2&net=cell')).stage, 'idle');
+  await api('/api/auto/now', { user: U, method: 'POST' });
+  assert.equal((await next('?v=2&net=cell')).stage, 'new');
+  assert.equal((await next('?v=2&net=cell')).stage, 'idle');
+  await api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify({ wifiOnly: false }) });
+  assert.equal((await info()).settings.wifiOnly, false);
+  await api('/api/auto/now', { user: U, method: 'POST' });
+  await next('?v=2&net=cell');
+  assert.equal((await next('?v=2&net=cell')).stage, 'idle'); // обычная пауза 12 часов: новых нет
+  assert.equal((await info()).run.net, 'cell');
+
+  // архив: снимки после создания ключа — стоп, архив закончен
+  await api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify({ archive: true }) });
+  assert.equal((await check({ taken: soon, created: soon }, true)).do, 'stop');
+  // без даты создания проверка не работает
+  const f = new FormData();
+  f.set('taken', '2020-01-01T00:00:00Z');
+  assert.equal((await api('/api/auto/check', { headers: auth, method: 'POST', body: f })).status, 400);
 });

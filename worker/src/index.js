@@ -20,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto, setArchiveStall, skipArchive } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto, setArchiveStall, skipArchive, autoRun, startRun, finishRun, setPending, clearPending, isSkipped, addSkipped, listSkipped } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -76,6 +76,8 @@ async function route(request, env, ctx) {
   if (pathname === '/api/auto/settings' && request.method === 'POST') return autoSettingsRoute(request, env);
   if (pathname === '/api/auto/now' && request.method === 'POST') return autoNow(request, env);
   if (pathname === '/api/auto/skip' && request.method === 'POST') return autoSkip(request, env);
+  if (pathname === '/api/auto/check' && request.method === 'POST') return autoCheck(request, env, url);
+  if (pathname === '/api/auto/done' && (request.method === 'POST' || request.method === 'GET')) return autoDone(request, env);
   const pv = /^\/api\/photo\/(\d{1,15})\/preview$/.exec(pathname);
   if (pv && request.method === 'POST') return previewRoute(request, env, Number(pv[1]));
   const del = /^\/api\/photo\/(\d{1,15})$/.exec(pathname);
@@ -329,23 +331,29 @@ async function upload(request, env, url) {
   if (form.get('taken') && !meta[0]) meta[0] = { taken: Date.parse(form.get('taken')) };
   if (form.get('la') && form.get('lo')) Object.assign((meta[0] ||= {}), { la: Number(form.get('la')), lo: Number(form.get('lo')) });
   const now = Date.now();
+  // Команда версии 2 присылает ещё и дату создания снимка. Фото она ищет именно по ней, поэтому и отметку
+  // «докуда дошли» ведём по ней. Раз снимок дошёл до сервера, iPhone на нём не завис — больше его не ждём.
+  const dates = who.source === 'auto' ? photoDates(form) : null;
+  if (dates?.item) await clearPending(env.DB, uid, dates.item);
 
   // Архив идёт от старых фото к новым и останавливается на фото, снятых после создания ключа, —
   // дальше их везёт обычная автозагрузка. Докуда дошли, запоминаем даже для пропущенных фото,
   // иначе команда будет снова и снова находить одни и те же.
   let archiveAt = null;
+  let mark = null;
   if (archive) {
-    archiveAt = Date.parse(form.get('taken') || '');
-    if (!Number.isFinite(archiveAt)) throw new HttpError(400, 'no_date', 'Нет даты съёмки — проверьте в команде поле taken');
-    if (archiveAt >= who.key.created) {
+    archiveAt = dates.taken;
+    if (archiveAt == null) throw new HttpError(400, 'no_date', 'Нет даты съёмки — проверьте в команде поле taken');
+    mark = dates.created ?? archiveAt;
+    if (mark >= who.key.created) {
       await touchArchive(env.DB, uid, now, who.key.created);
       return json(request, env, { ok: true, items: [], skipped: 1, done: true });
     }
     const prev = await archiveInfo(env.DB, uid);
     // Уже есть фото, снятое в ту же секунду: загружено кнопкой или автозагрузкой — или это последнее
     // фото прошлого запуска (команда начинает на секунду раньше, чтобы не пропустить соседние кадры).
-    if (await hasTakenAt(env.DB, uid, archiveAt, prev?.cursor != null && archiveAt <= prev.cursor)) {
-      await touchArchive(env.DB, uid, now, archiveAt);
+    if (await hasTakenAt(env.DB, uid, archiveAt, prev?.cursor != null && mark <= prev.cursor)) {
+      await touchArchive(env.DB, uid, now, mark);
       return json(request, env, { ok: true, items: [], skipped: 1 });
     }
   }
@@ -405,8 +413,8 @@ async function upload(request, env, url) {
   if (!files.length && !skipped) throw new HttpError(400, 'bad_request', 'Нет файлов');
   const takenOf = (m) => num(m.taken, Date.UTC(1990, 0, 1), now + 86400000);
   if (!files.length) {
-    if (archive) await touchArchive(env.DB, uid, now, archiveAt);
-    else if (source === 'auto') await touchKey(env.DB, uid, null, Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
+    if (archive) await touchArchive(env.DB, uid, now, mark);
+    else if (source === 'auto') await touchKey(env.DB, uid, null, dates?.created ?? Math.max(0, ...meta.map((m) => takenOf(m || {}) || 0)));
     return json(request, env, { ok: true, items: [], skipped });
   }
 
@@ -475,8 +483,8 @@ async function upload(request, env, url) {
       throw e;
     }
   }
-  if (archive) await touchArchive(env.DB, uid, now, archiveAt);
-  else if (source === 'auto') await touchKey(env.DB, uid, now, Math.max(0, ...recs.map((r) => r.taken || 0)));
+  if (archive) await touchArchive(env.DB, uid, now, mark);
+  else if (source === 'auto') await touchKey(env.DB, uid, now, dates?.created ?? Math.max(0, ...recs.map((r) => r.taken || 0)));
   return json(request, env, { ok: true, items: rows.map(toItem), skipped });
 }
 
@@ -624,8 +632,12 @@ async function autoKey(request, env, url) {
     const info = await keyInfo(env.DB, uid);
     const a = await archiveInfo(env.DB, uid);
     const archive = a ? { cursor: a.cursor, used: a.used, moved: a.moved ?? null, count: a.count || 0, done: archiveDone(a, info), stuck: archiveStuck(a, info, Date.now()) } : null;
-    const { original, archive: withArchive } = await autoSettings(env.DB, uid);
-    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive, settings: { original, archive: withArchive } });
+    const { original, archive: withArchive, wifiOnly } = await autoSettings(env.DB, uid);
+    const r = await autoRun(env.DB, uid);
+    // Последний запуск: какая версия команды, через какую сеть, дошёл ли до конца (знает только версия 2).
+    const run = r?.run_at ? { version: r.version || 1, net: r.net || null, at: r.run_at, done: r.done_at != null && r.done_at >= r.run_at } : null;
+    const skipped = (await listSkipped(env.DB, uid)).map((x) => ({ taken: x.taken, text: fmtShotRu(x.taken), at: x.at }));
+    return json(request, env, { exists: Boolean(info), created: info?.created || null, cursor: info?.cursor || null, used: info?.used || null, base, archive, settings: { original, archive: withArchive, wifiOnly }, run, skipped });
   }
   if (request.method === 'POST') {
     // Новый ключ заменяет старый: старый сразу перестаёт работать. Сам ключ показываем один раз.
@@ -674,7 +686,9 @@ const STUCK_AFTER = 24 * 3600 * 1000;
 const archiveStuck = (a, key, now) => Boolean(a && a.cursor != null && !archiveDone(a, key) && (a.stall || 0) >= STUCK_RUNS && now - (a.moved ?? a.used ?? now) >= STUCK_AFTER);
 const fmtDayRu = (ms) => new Date(ms).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).replace(/\s*г\.$/, '');
 const isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
-const LIMIT = 100; // в готовой команде число фото за запуск записано само (100); здесь — для своих команд
+const LIMIT = 100; // сколько фото за запуск (старая команда берёт 100 всегда, версия 2 — сколько скажет сервер)
+const PHOTO_SIDE = 2560;
+const THUMB_SIDE = 320;
 // Команда запускается при каждом открытии Telegram, а новые снимки проверяем раз в 12 часов: так они уходят
 // 1–2 раза в день, и телефону незачем снова и снова пересылать снимки последней минуты.
 const NEW_EVERY = 12 * 3600 * 1000;
@@ -701,7 +715,13 @@ async function autoNext(request, env, url) {
   const base = url.origin;
   let stage = 'new';
   let since = beforeMinute(row.cursor || row.created);
-  if (s.archive && s.lastNew != null) {
+  // Команда версии 2 сообщает свою версию и сеть (v=2&net=wifi|cell). Старая не сообщает ничего:
+  // у неё Wi‑Fi проверяет сама автоматизация. По мобильной сети (если так настроено) — пауза,
+  // кроме запуска сразу после «Загрузить сейчас»: тогда человек сам попросил загрузить.
+  const version = num(Number(url.searchParams.get('v')), 1, 1000) || 1;
+  const net = { wifi: 'wifi', cell: 'cell' }[url.searchParams.get('net')] || null;
+  const offWifi = s.wifiOnly && net === 'cell' && s.lastNew != null;
+  if (s.archive && s.lastNew != null && !offWifi) {
     const afterOld = (s.lastArchive ?? 0) > s.lastNew;
     const noNew = (row.used ?? 0) < s.lastNew;
     if (afterOld ? now - s.lastNew < NEW_EVERY : noNew) {
@@ -715,11 +735,14 @@ async function autoNext(request, env, url) {
   }
   // Пауза: задание «искать с этой секунды» — телефон ничего не найдёт и закончит. Время проверки не обновляем,
   // иначе частые открытия Telegram продлевали бы паузу бесконечно.
-  const idle = stage === 'new' && s.lastNew != null && now - s.lastNew < NEW_EVERY && (row.used ?? 0) < s.lastNew;
+  const pause = s.lastNew != null && now - s.lastNew < NEW_EVERY && (row.used ?? 0) < s.lastNew;
+  const idle = (stage === 'new' && pause) || offWifi;
   if (idle) {
     stage = 'idle';
     since = now;
   } else await (stage === 'new' ? touchNew : touchOld)(env.DB, uid, now);
+  await startRun(env.DB, uid, now, version, net);
+  const q = stage === 'archive' ? '?archive=1' : '';
   return json(request, env, {
     stage,
     since: isoSec(since),
@@ -728,8 +751,13 @@ async function autoNext(request, env, url) {
     // на дорогу ответа — повторы всё равно отсеются.
     ago: idle ? 0 : Math.max(0, Math.ceil((now - since) / 1000) + 5),
     limit: LIMIT,
-    upload: `${base}/api/upload${stage === 'archive' ? '?archive=1' : ''}`,
+    upload: `${base}/api/upload${q}`,
     mode: s.original ? 'doc' : 'photo',
+    // Дальше — для команды версии 2 (старая эти поля не читает).
+    check: `${base}/api/auto/check${q}`, // перед обработкой снимка: брать ли его
+    done: `${base}/api/auto/done`, // в конце: запуск закончен
+    size: PHOTO_SIDE, // сжатое фото — до стольких пикселей по длинной стороне
+    thumb: THUMB_SIDE, // обложка оригинала
   });
 }
 
@@ -755,7 +783,105 @@ async function noteStall(env, uid, a, s, key, now) {
   }
 }
 
-// Перешагнуть место, где архив застрял: дальше он пойдёт с выбранной даты. Снимки до неё архив пропустит.
+// ── Команда версии 2: проверка каждого снимка ──
+// Перед тем как сжимать и отправлять снимок, команда присылает его даты (taken — съёмки, created — создания,
+// обе в ISO 8601), тип (type) и признак скриншота (shot) и получает { do: 'send' | 'skip' | 'stop' }.
+// Так сервер отсеивает видео, скриншоты и уже загруженное, не гоняя файлы, а снимок, на котором iPhone
+// зависает, пропускает: если его брали FAILS_TO_SKIP запусков подряд и ни один не прислал.
+const FAILS_TO_SKIP = 2;
+const YES = /^(1|true|yes|да)$/i;
+const MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+// Даты снимка из формы команды. item — «съёмка|создание» в секундах: так запоминаем конкретный снимок.
+// Старая команда присылает только дату съёмки — тогда created и item пустые.
+function photoDates(form) {
+  const t = Date.parse(form.get('taken') || '');
+  const c = Date.parse(form.get('created') || '');
+  const taken = Number.isFinite(t) ? t : Number.isFinite(c) ? c : null;
+  if (!Number.isFinite(c)) return { taken, created: null, item: null, text: null };
+  return { taken, created: c, item: `${Math.floor(taken / 1000)}|${Math.floor(c / 1000)}`, text: String(form.get('taken') || form.get('created')) };
+}
+
+// «2022-09-23T15:10:00+04:00» → «23 сентября 2022, 15:10» — по часам iPhone, как человек видит снимок в «Фото».
+function fmtShotRu(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(text || '');
+  return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}, ${m[4]}:${m[5]}` : String(text || '');
+}
+
+async function autoCheck(request, env, url) {
+  const row = await keyOwner(request, env);
+  const uid = row.user_id;
+  const archive = url.searchParams.get('archive') === '1';
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    throw new HttpError(400, 'bad_request', 'Не удалось прочитать запрос');
+  }
+  const d = photoDates(form);
+  if (!d.item) throw new HttpError(400, 'no_date', 'Нет даты создания — проверьте в команде поле created');
+  const now = Date.now();
+  const answer = (what, why) => json(request, env, why ? { do: what, why } : { do: what });
+  // Пропускаем — и двигаем отметку за этот снимок, чтобы следующие запуски начинали после него.
+  const pass = async (why) => {
+    await clearPending(env.DB, uid, d.item);
+    if (archive) await touchArchive(env.DB, uid, now, d.created);
+    else await touchKey(env.DB, uid, null, d.created);
+    return answer('skip', why);
+  };
+
+  if (archive && d.created >= row.created) {
+    await touchArchive(env.DB, uid, now, row.created);
+    return answer('stop', 'archive_done');
+  }
+  // Фильтры «Тип медиафайла» и «Не снимок экрана» в «Командах» на iOS 26 не срабатывают — отсеиваем здесь.
+  if (/video|видео/i.test(String(form.get('type') || ''))) return pass('video');
+  if (YES.test(String(form.get('shot') || '').trim())) return pass('screenshot');
+  if (await isSkipped(env.DB, uid, d.item)) return pass('hangs');
+  // Уже загружен: снимок той же секунды есть, а отметка уже за ним (повтор с прошлого запуска).
+  const cursor = archive ? (await archiveInfo(env.DB, uid))?.cursor : row.cursor;
+  const behind = cursor != null && d.created <= cursor;
+  if ((archive || behind) && (await hasTakenAt(env.DB, uid, d.taken, behind))) return pass('have');
+
+  // Этот же снимок брали прошлые запуски и не прислали — значит, iPhone на нём зависает.
+  const r = await autoRun(env.DB, uid);
+  const run = r?.run_at ?? null;
+  if (r?.pending === d.item) {
+    const fails = (r.pending_fails || 0) + (r.pending_run !== run ? 1 : 0);
+    if (fails >= FAILS_TO_SKIP) {
+      await addSkipped(env.DB, uid, d.item, d.text, now);
+      await tellSkipped(env, uid, d.text);
+      return pass('hangs');
+    }
+    await setPending(env.DB, uid, d.item, run, fails);
+  } else await setPending(env.DB, uid, d.item, run, 0);
+  return answer('send');
+}
+
+async function tellSkipped(env, uid, text) {
+  const body = {
+    chat_id: uid,
+    text:
+      `Пропустил снимок от ${fmtShotRu(text)}: iPhone несколько раз зависал на нём, и из‑за этого не загружались следующие. ` +
+      'Остальные фото пойдут дальше как обычно.\n\nЕсли этот снимок нужен — добавьте его в галерею вручную кнопкой «+».',
+  };
+  if (env.WEBAPP_URL) body.reply_markup = { inline_keyboard: [[{ text: 'Открыть галерею', web_app: { url: env.WEBAPP_URL } }]] };
+  try {
+    await callApi(env.BOT_TOKEN, 'sendMessage', body);
+  } catch {
+    // Не дошло — не страшно: пропущенные снимки видны и в галерее.
+  }
+}
+
+// Команда дошла до конца — значит, запуск не завис и iPhone его не прервал.
+async function autoDone(request, env) {
+  const row = await keyOwner(request, env);
+  await finishRun(env.DB, row.user_id, Date.now());
+  return json(request, env, { ok: true });
+}
+
+// «Дошли до» вручную: архив продолжится с выбранной даты — вперёд (перешагнуть место, где застрял; снимки до неё
+// архив пропустит) или назад (пройти заново; уже загруженное не повторится).
 async function autoSkip(request, env) {
   const uid = await authUser(request, env);
   let body;
@@ -764,12 +890,11 @@ async function autoSkip(request, env) {
   } catch {
     throw new HttpError(400, 'bad_request', 'Не удалось прочитать дату');
   }
-  const a = await archiveInfo(env.DB, uid);
-  if (!a || a.cursor == null) throw new HttpError(400, 'bad_request', 'Старые фото ещё не начали загружаться');
   const key = await keyInfo(env.DB, uid);
+  if (!key) throw new HttpError(400, 'bad_request', 'Автозагрузка не подключена');
   let from = Number(body?.from);
-  if (!Number.isFinite(from) || from <= a.cursor) throw new HttpError(400, 'bad_date', 'Выберите дату позже той, где архив остановился');
-  if (key && from > key.created) from = key.created;
+  if (!Number.isFinite(from) || from < Date.UTC(1990, 0, 1)) throw new HttpError(400, 'bad_date', 'Выберите дату');
+  if (from > key.created) from = key.created;
   await skipArchive(env.DB, uid, Date.now(), from);
   const b = await archiveInfo(env.DB, uid);
   return json(request, env, { ok: true, archive: { cursor: b.cursor, used: b.used, moved: b.moved, count: b.count || 0, done: archiveDone(b, key), stuck: archiveStuck(b, key, Date.now()) } });
@@ -792,6 +917,7 @@ async function autoSettingsRoute(request, env) {
   const next = {
     original: typeof body?.original === 'boolean' ? body.original : cur.original,
     archive: typeof body?.archive === 'boolean' ? body.archive : cur.archive,
+    wifiOnly: typeof body?.wifiOnly === 'boolean' ? body.wifiOnly : cur.wifiOnly,
   };
   await saveAutoSettings(env.DB, uid, next);
   return json(request, env, { ok: true, settings: next });

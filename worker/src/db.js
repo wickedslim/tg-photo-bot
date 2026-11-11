@@ -131,9 +131,12 @@ export function setArchiveStall(db, userId, stall, warned) {
   return db.prepare('UPDATE archive_progress SET stall = ?, warned = ? WHERE user_id = ?').bind(stall, warned ?? null, userId).run();
 }
 
-// Человек сам решил перешагнуть место, где архив застрял: продолжаем с выбранной даты.
+// Человек сам выбрал, с какой даты продолжить архив (вперёд или назад).
 export function skipArchive(db, userId, now, cursor) {
-  return db.prepare('UPDATE archive_progress SET cursor = ?, moved = ?, stall = 0 WHERE user_id = ? AND cursor < ?').bind(cursor, now, userId, cursor).run();
+  return db
+    .prepare('INSERT INTO archive_progress (user_id, cursor, moved) VALUES (?1, ?2, ?3) ON CONFLICT (user_id) DO UPDATE SET cursor = ?2, moved = ?3, stall = 0, warned = NULL')
+    .bind(userId, cursor, now)
+    .run();
 }
 
 // Есть ли уже фото, снятое в ту же секунду. Без withArchive смотрим только загруженные НЕ архивом
@@ -202,14 +205,14 @@ export async function findDuplicate(db, userId, rec) {
 
 // Настройки автозагрузки (см. миграцию 0006). Нет строки — всё выключено.
 export async function autoSettings(db, userId) {
-  const r = await db.prepare('SELECT original, archive, last_new, last_archive FROM auto_settings WHERE user_id = ?').bind(userId).first();
-  return { original: Boolean(r?.original), archive: Boolean(r?.archive), lastNew: r?.last_new ?? null, lastArchive: r?.last_archive ?? null };
+  const r = await db.prepare('SELECT original, archive, wifi_only, last_new, last_archive FROM auto_settings WHERE user_id = ?').bind(userId).first();
+  return { original: Boolean(r?.original), archive: Boolean(r?.archive), wifiOnly: r ? Boolean(r.wifi_only) : true, lastNew: r?.last_new ?? null, lastArchive: r?.last_archive ?? null };
 }
 
-export function saveAutoSettings(db, userId, { original, archive }) {
+export function saveAutoSettings(db, userId, { original, archive, wifiOnly }) {
   return db
-    .prepare('INSERT INTO auto_settings (user_id, original, archive) VALUES (?1, ?2, ?3) ON CONFLICT (user_id) DO UPDATE SET original = ?2, archive = ?3')
-    .bind(userId, original ? 1 : 0, archive ? 1 : 0)
+    .prepare('INSERT INTO auto_settings (user_id, original, archive, wifi_only) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (user_id) DO UPDATE SET original = ?2, archive = ?3, wifi_only = ?4')
+    .bind(userId, original ? 1 : 0, archive ? 1 : 0, wifiOnly ? 1 : 0)
     .run();
 }
 
@@ -224,4 +227,44 @@ export function resumeAuto(db, userId) {
 
 export function touchOld(db, userId, now) {
   return db.prepare('UPDATE auto_settings SET last_archive = ? WHERE user_id = ?').bind(now, userId).run();
+}
+
+// ── Запуски команды (версия 2: проверка каждого снимка, отметка «закончен») ──
+export function autoRun(db, userId) {
+  return db.prepare('SELECT version, net, run_at, done_at, pending, pending_run, pending_fails FROM auto_settings WHERE user_id = ?').bind(userId).first();
+}
+
+// Начался запуск: какая команда, через какую сеть.
+export function startRun(db, userId, now, version, net) {
+  return db
+    .prepare('INSERT INTO auto_settings (user_id, version, net, run_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (user_id) DO UPDATE SET version = ?2, net = ?3, run_at = ?4')
+    .bind(userId, version, net, now)
+    .run();
+}
+
+export function finishRun(db, userId, now) {
+  return db.prepare('UPDATE auto_settings SET done_at = ? WHERE user_id = ?').bind(now, userId).run();
+}
+
+// Команда взяла снимок в работу (fails — сколько прошлых запусков брали его и не прислали).
+export function setPending(db, userId, item, run, fails) {
+  return db.prepare('UPDATE auto_settings SET pending = ?, pending_run = ?, pending_fails = ? WHERE user_id = ?').bind(item, run, fails, userId).run();
+}
+
+// Снимок дошёл до сервера (или его пропустили) — больше не ждём.
+export function clearPending(db, userId, item) {
+  return db.prepare('UPDATE auto_settings SET pending = NULL, pending_run = NULL, pending_fails = 0 WHERE user_id = ? AND pending = ?').bind(userId, item).run();
+}
+
+export async function isSkipped(db, userId, item) {
+  return Boolean(await db.prepare('SELECT 1 FROM auto_skipped WHERE user_id = ? AND item = ?').bind(userId, item).first());
+}
+
+export async function listSkipped(db, userId) {
+  const { results } = await db.prepare('SELECT taken, at FROM auto_skipped WHERE user_id = ? ORDER BY at DESC LIMIT 20').bind(userId).all();
+  return results;
+}
+
+export function addSkipped(db, userId, item, taken, now) {
+  return db.prepare('INSERT OR IGNORE INTO auto_skipped (user_id, item, taken, at) VALUES (?, ?, ?, ?)').bind(userId, item, taken, now).run();
 }
