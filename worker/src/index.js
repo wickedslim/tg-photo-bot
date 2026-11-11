@@ -733,10 +733,11 @@ async function autoNext(request, env, url) {
   });
 }
 
-// Прошлый запуск со старыми фото что-то прислал (хоть один снимок — загруженный или пропущенный), а отметка
-// с тех пор не сдвинулась — плюс один запуск без движения. Когда архив застрял, бот пишет об этом один раз.
+// Прошлый запуск получил задание «старые фото», а отметка с тех пор не сдвинулась — плюс один запуск без движения.
+// Считаем и запуски, которые ничего не прислали: iPhone может зависнуть ещё до первого снимка.
+// Когда архив застрял (несколько таких запусков и больше суток без движения), бот пишет об этом один раз.
 async function noteStall(env, uid, a, s, key, now) {
-  if (s.lastArchive == null || (a.used ?? 0) <= s.lastArchive || (a.moved ?? 0) >= s.lastArchive) return;
+  if (s.lastArchive == null || (a.moved ?? 0) >= s.lastArchive) return;
   const stall = (a.stall || 0) + 1;
   const warn = archiveStuck({ ...a, stall }, key, now) && a.warned !== a.cursor;
   await setArchiveStall(env.DB, uid, stall, warn ? a.cursor : a.warned);
