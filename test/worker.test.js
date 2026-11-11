@@ -388,6 +388,8 @@ test('готовая команда: задание от сервера, нас�
   // «Загрузить сейчас» снимает паузу; по ключу автозагрузки этого сделать нельзя
   assert.equal((await api('/api/auto/now', { headers: auth, method: 'POST', body: '{}' })).status, 401);
   assert.equal((await next()).stage, 'idle');
+  // (новые проверялись только что — кнопка их не перепроверяет; пусть прошло 11 минут)
+  await db.prepare('UPDATE auto_settings SET last_new = last_new - 660000 WHERE user_id = ?').bind(U).run();
   assert.equal((await api('/api/auto/now', { user: U, method: 'POST', body: '{}' })).status, 200);
   assert.equal((await next()).stage, 'new');
   await db.prepare('UPDATE auto_settings SET last_new = ? WHERE user_id = ?').bind(Date.now() - 13 * 3600 * 1000, U).run();
@@ -839,11 +841,14 @@ test('команда версии 2: проверка снимка, видео �
 
   // только по Wi‑Fi (по умолчанию): по мобильной сети — пауза, но сразу после «Загрузить сейчас» — можно
   assert.equal((await next('?v=2&net=cell')).stage, 'idle');
+  const age = () => db.prepare('UPDATE auto_settings SET last_new = last_new - 660000 WHERE user_id = ?').bind(U).run();
+  await age();
   await api('/api/auto/now', { user: U, method: 'POST' });
   assert.equal((await next('?v=2&net=cell')).stage, 'new');
   assert.equal((await next('?v=2&net=cell')).stage, 'idle');
   await api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify({ wifiOnly: false }) });
   assert.equal((await info()).settings.wifiOnly, false);
+  await age();
   await api('/api/auto/now', { user: U, method: 'POST' });
   await next('?v=2&net=cell');
   assert.equal((await next('?v=2&net=cell')).stage, 'idle'); // обычная пауза 12 часов: новых нет
@@ -856,4 +861,44 @@ test('команда версии 2: проверка снимка, видео �
   const f = new FormData();
   f.set('taken', '2020-01-01T00:00:00Z');
   assert.equal((await api('/api/auto/check', { headers: auth, method: 'POST', body: f })).status, 400);
+});
+
+test('старые фото без автоматизации: после новых — сразу старые, «Загрузить сейчас» не возвращает к новым', async () => {
+  const U = 7373;
+  const created = await (await api('/api/auto/key', { user: U, method: 'POST' })).json();
+  const auth = { authorization: 'Key ' + created.key };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const next = async (q = '?v=2&net=wifi') => {
+    await tick();
+    return (await api('/api/auto/next' + q, { headers: auth })).json();
+  };
+  const done = () => api('/api/auto/done', { headers: auth, method: 'POST' });
+  const send = async (taken, created, name) => {
+    await tick();
+    const f = new FormData();
+    f.set('file', jpeg(name));
+    f.set('taken', taken);
+    f.set('created', created);
+    return (await api('/api/upload', { headers: auth, method: 'POST', body: f })).json();
+  };
+  const now = () => api('/api/auto/now', { user: U, method: 'POST' });
+  await api('/api/auto/settings', { user: U, method: 'POST', body: JSON.stringify({ archive: true }) });
+
+  // первый запуск — новые; привёз снимок и дошёл до конца — значит, новые все, следующий везёт старые
+  assert.equal((await next()).stage, 'new');
+  const soon = new Date(Date.now() + 60000).toISOString();
+  assert.equal((await send(soon, soon, 'q-new')).items.length, 1);
+  await done();
+  assert.equal((await next()).stage, 'archive');
+  // «Загрузить сейчас», когда новые проверялись только что, — снова старые, а не новые
+  await done();
+  await now();
+  assert.equal((await next()).stage, 'archive');
+  // а запуск без отметки «закончен» (старая команда или прерванный) — как раньше: после привезённых новых снова новые
+  const db = await mf.getD1Database('DB');
+  await db.prepare('UPDATE auto_settings SET last_new = NULL WHERE user_id = ?').bind(U).run();
+  assert.equal((await next()).stage, 'new');
+  const later = new Date(Date.now() + 120000).toISOString();
+  await send(later, later, 'q-new-2');
+  assert.equal((await next()).stage, 'new');
 });

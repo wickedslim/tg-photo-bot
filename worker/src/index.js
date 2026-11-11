@@ -20,7 +20,7 @@ import { verifyInitData, initDataFromRequest, makeFileToken, verifyFileToken, Au
 import { callApi, filePath, forgetPath, downloadFile, extractPhoto, TgError, MAX_DOWNLOAD, MAX_UPLOAD, MAX_PHOTO_UPLOAD } from './telegram.js';
 import { readExif, isScreenshot } from './exif.js';
 import { stubJpeg, STUB_CAPTION } from './stub.js';
-import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto, setArchiveStall, skipArchive, autoRun, startRun, finishRun, setPending, clearPending, isSkipped, addSkipped, listSkipped } from './db.js';
+import { savePhotos, listPhotos, getPhoto, toItem, hasHash, keyInfo, setKey, deleteKey, userByKey, touchKey, archiveInfo, touchArchive, hasTakenAt, setPreview, channelOwner, linkChannel, unlinkChannel, findDuplicate, autoSettings, saveAutoSettings, touchNew, touchOld, resumeAuto, setArchiveStall, skipArchive, autoRun, startRun, finishRun, setPending, clearPending, isSkipped, addSkipped, listSkipped, autoCountSince } from './db.js';
 
 const MAX_BATCH = 10; // столько фото Telegram принимает в один альбом
 const MAX_BODY = 95 * 1024 * 1024; // Cloudflare на бесплатном тарифе принимает запросы до 100 МБ
@@ -723,7 +723,13 @@ async function autoNext(request, env, url) {
   const offWifi = s.wifiOnly && net === 'cell' && s.lastNew != null;
   if (s.archive && s.lastNew != null && !offWifi) {
     const afterOld = (s.lastArchive ?? 0) > s.lastNew;
-    const noNew = (row.used ?? 0) < s.lastNew;
+    // Новых нет: прошлое задание «новые» ничего не привезло — или (команда версии 2) дошло до конца и привезло
+    // меньше, чем помещается в один запуск: значит, привезло все.
+    let noNew = (row.used ?? 0) < s.lastNew;
+    if (!noNew && !afterOld) {
+      const r = await autoRun(env.DB, uid);
+      noNew = r?.done_at != null && r.done_at >= s.lastNew && (await autoCountSince(env.DB, uid, s.lastNew)) < LIMIT;
+    }
     if (afterOld ? now - s.lastNew < NEW_EVERY : noNew) {
       const a = await archiveInfo(env.DB, uid);
       if (!archiveDone(a, row)) {
@@ -900,8 +906,11 @@ async function autoSkip(request, env) {
   return json(request, env, { ok: true, archive: { cursor: b.cursor, used: b.used, moved: b.moved, count: b.count || 0, done: archiveDone(b, key), stuck: archiveStuck(b, key, Date.now()) } });
 }
 
+// Новые проверялись меньше NOW_FRESH назад — кнопка не заставляет проверять их снова, и запуск везёт старые фото
+// (если они включены). Иначе без автоматизации «Telegram открыт» до старых фото не дойдёт никогда.
+const NOW_FRESH = 10 * 60000;
 async function autoNow(request, env) {
-  await resumeAuto(env.DB, await authUser(request, env));
+  await resumeAuto(env.DB, await authUser(request, env), Date.now() - NOW_FRESH);
   return json(request, env, { ok: true });
 }
 

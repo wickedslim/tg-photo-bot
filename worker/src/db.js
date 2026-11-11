@@ -221,8 +221,15 @@ export function touchNew(db, userId, now) {
 }
 
 // «Загрузить сейчас» в галерее: забываем время проверки, и следующий запуск сразу ищет новые снимки.
-export function resumeAuto(db, userId) {
-  return db.prepare('UPDATE auto_settings SET last_new = NULL WHERE user_id = ?').bind(userId).run();
+// Если новые проверялись только что (позже fresh), не забываем: тогда запуск повезёт старые фото.
+export function resumeAuto(db, userId, fresh = 0) {
+  return db.prepare('UPDATE auto_settings SET last_new = NULL WHERE user_id = ? AND (last_new IS NULL OR last_new < ?)').bind(userId, fresh).run();
+}
+
+// Сколько фото привезла автозагрузка (новые, не архив) с этого момента, миллисекунды.
+export async function autoCountSince(db, userId, ms) {
+  const r = await db.prepare("SELECT COUNT(*) AS n FROM photos WHERE user_id = ? AND source = 'auto' AND date >= ?").bind(userId, Math.floor(ms / 1000)).first();
+  return r?.n || 0;
 }
 
 export function touchOld(db, userId, now) {
